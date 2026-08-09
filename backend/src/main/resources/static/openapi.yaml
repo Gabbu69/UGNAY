@@ -1,0 +1,482 @@
+openapi: 3.1.0
+info:
+  title: UGNAY Research Continuity API
+  version: 0.2.0
+  description: Explainable research discovery, traceability, scope analysis, and continuity API. Recommendations never replace academic decisions.
+servers:
+  - url: /api/v1
+security:
+  - sessionCookie: []
+paths:
+  /auth/login:
+    post:
+      security: []
+      summary: Start a same-origin server session
+      description: Used by the browser account panel after `/auth/me` reports a live anonymous session. A successful response establishes the HttpOnly JDBC-backed session cookie; no browser access token is returned or stored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        '200': { description: Authenticated session, content: { application/json: { schema: { $ref: '#/components/schemas/AuthView' } } } }
+        '401': { $ref: '#/components/responses/Problem' }
+  /auth/csrf:
+    get:
+      security: []
+      summary: Issue the CSRF token/cookie required by authenticated mutations
+      responses:
+        '200': { description: CSRF token metadata }
+  /auth/me:
+    get:
+      security: []
+      summary: Inspect the current session
+      description: The browser account panel uses this response to distinguish an authenticated user from a reachable anonymous session. Network failure is represented by the client as an unavailable state, not as anonymous authentication.
+      responses:
+        '200': { description: Authenticated or anonymous session state, content: { application/json: { schema: { $ref: '#/components/schemas/AuthView' } } } }
+  /auth/logout:
+    post:
+      security: []
+      summary: Invalidate the current JDBC-backed session
+      description: The browser account panel first obtains `/auth/csrf`, sends the named token header on this request, then invalidates and refetches session and workspace queries.
+      parameters: [ { $ref: '#/components/parameters/CsrfHeader' } ]
+      responses:
+        '204': { description: Session invalidated }
+        '403': { $ref: '#/components/responses/Problem' }
+  /auth/invitations/accept:
+    post:
+      security: []
+      summary: Accept a single-use invitation and create a persistent account
+      description: The invitation token authorizes this public action and must be unused and unexpired. The account inherits the inviter's department and receives the invitation's one intended role; acceptance does not start a login session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, displayName, password]
+              properties:
+                token: { type: string, minLength: 1 }
+                displayName: { type: string, minLength: 1, maxLength: 160 }
+                password: { type: string, format: password, minLength: 12, maxLength: 128 }
+      responses:
+        '201': { description: Persistent invited account, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /workspace:
+    get:
+      summary: Load the complete UI workspace projection
+      parameters:
+        - { in: query, name: projectId, required: false, schema: { type: string, format: uuid }, description: Granted project to select; omitted selects the first accessible project }
+      responses:
+        '200': { description: WorkspaceData contract, content: { application/json: { schema: { $ref: '#/components/schemas/Workspace' } } } }
+  /dashboard:
+    get:
+      summary: Load dashboard counts, health, and review queue
+      responses:
+        '200': { description: Dashboard aggregate }
+  /studies:
+    get:
+      summary: Search the authenticated research catalogue
+      parameters:
+        - { in: query, name: q, schema: { type: string } }
+      responses:
+        '200': { description: Ranked catalogue study views, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Study' } } } } }
+  /studies/{id}:
+    get:
+      summary: Read complete study evidence
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses:
+        '200': { description: Study detail }
+        '404': { $ref: '#/components/responses/Problem' }
+  /imports/studies:
+    post:
+      summary: Import reviewed study metadata
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses:
+        '201': { description: Imported study }
+        '422': { $ref: '#/components/responses/Problem' }
+  /imports/documents:
+    post:
+      summary: Validate, scan, privately store, and durably queue PDF extraction
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties: { file: { type: string, format: binary } }
+      responses:
+        '202': { description: "Durable extraction job ID, status URL, and progress-events URL" }
+        '422': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /imports/documents/jobs/{jobId}:
+    get:
+      summary: Read persistent PDF extraction status, limits, progress, and publication eligibility
+      parameters: [ { name: jobId, in: path, required: true, schema: { type: string, format: uuid } } ]
+      responses: { '200': { description: Persistent extraction job }, '404': { $ref: '#/components/responses/Problem' } }
+  /imports/documents/jobs/{jobId}/events:
+    get:
+      summary: Subscribe to extraction progress while GET status remains the durable source of truth
+      parameters: [ { name: jobId, in: path, required: true, schema: { type: string, format: uuid } } ]
+      responses: { '200': { description: text/event-stream progress events }, '404': { $ref: '#/components/responses/Problem' } }
+  /imports/documents/jobs/{jobId}/publish-study:
+    post:
+      summary: Curator publication of reviewed extracted evidence as a catalogue study
+      parameters: [ { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: Published study and immutable document-version association }, '403': { $ref: '#/components/responses/Problem' }, '422': { $ref: '#/components/responses/Problem' } }
+  /problems:
+    get: { summary: List structured problem cases, responses: { '200': { description: Problem cases } } }
+    post:
+      summary: Create a structured problem case
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: Created problem case }, '400': { $ref: '#/components/responses/Problem' } }
+  /proposals:
+    get: { summary: List proposals, responses: { '200': { description: Proposals } } }
+    post:
+      summary: Create a proposal from a problem case
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: Created proposal } }
+  /discovery-runs:
+    get: { summary: List immutable discovery runs, responses: { '200': { description: Discovery runs } } }
+    post:
+      summary: Run explainable hybrid research discovery
+      description: Missing local model assets produce PARTIAL results; component weights are never rescaled.
+      parameters: [ { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DiscoveryInput' }
+      responses:
+        '201': { description: Explainable ranked result, content: { application/json: { schema: { $ref: '#/components/schemas/DiscoveryRun' } } } }
+  /proposal-decisions:
+    get: { summary: List immutable human route decisions, responses: { '200': { description: Proposal decisions } } }
+    post:
+      summary: Record a human route; an approval atomically creates project baseline and continuity state
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: Immutable decision } }
+  /proposals/{id}/continuation-evidence:
+    post:
+      summary: Record objective-to-open-item mappings and predecessor access for a CONTINUE route
+      parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: Persisted continuation evidence }, '422': { $ref: '#/components/responses/Problem' } }
+  /proposals/{id}/improvement-claims:
+    post:
+      summary: Record a predecessor limitation, baseline, target, and evaluation method
+      parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: Persisted improvement claim }, '422': { $ref: '#/components/responses/Problem' } }
+  /proposals/{id}/adviser-recommendations:
+    get:
+      summary: Read immutable adviser recommendations for a proposal
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses: { '200': { description: Adviser recommendations } }
+    post:
+      summary: Record an immutable adviser recommendation against a frozen discovery run
+      parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: Immutable adviser recommendation }, '403': { $ref: '#/components/responses/Problem' } }
+  /projects:
+    get:
+      summary: List research projects accessible to the current account
+      parameters: [ { in: query, name: mine, schema: { type: boolean, default: true } } ]
+      responses: { '200': { description: Accessible projects } }
+  /projects/{id}:
+    get:
+      summary: Read a project with an ETag
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses: { '200': { description: Project, headers: { ETag: { schema: { type: string } } } } }
+  /projects/{id}/traceability:
+    get:
+      summary: Read the current trace graph, findings, executions, and coverage
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses: { '200': { description: Traceability assessment } }
+  /projects/{id}/findings:
+    get:
+      summary: Read current findings with stable fingerprints and effective dispositions
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses: { '200': { description: Current findings and recurrence-aware states } }
+  /projects/{id}/findings/{findingId}/{action}:
+    post:
+      summary: Resolve, accept with expiry, or reopen a finding
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { in: path, name: findingId, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: action, required: true, schema: { enum: [resolve, accept, reopen] } }
+        - { $ref: '#/components/parameters/IfMatch' }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '200': { description: Durable disposition and new project ETag }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /projects/{id}/memberships:
+    get:
+      summary: List explicit project memberships
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses: { '200': { description: Project memberships } }
+    post:
+      summary: Curator grant of a role-scoped project membership
+      parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: Membership grant }, '403': { $ref: '#/components/responses/Problem' } }
+  /projects/{id}/health:
+    get:
+      summary: Read independent project-health dimensions
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses: { '200': { description: Health snapshot } }
+  /projects/{id}/scope-risk:
+    get:
+      summary: Read the explained scope-risk calculation
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses: { '200': { description: Scope risk or UNASSESSED } }
+  /projects/{id}/lineage:
+    get:
+      summary: Read predecessor and successor lineage
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses: { '200': { description: Lineage graph } }
+  /projects/{id}/completion-package:
+    get:
+      summary: Read the continuity package and readiness evidence
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses: { '200': { description: Completion package } }
+  /projects/{id}/analysis-runs:
+    post:
+      summary: Recalculate deterministic alignment analysis
+      parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      responses: { '201': { description: Current analysis }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /projects/{id}/trace-items:
+    post:
+      summary: Create a draft trace item in the project's mutable working evidence chain
+      parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: "Created item, recalculated analysis, and new project ETag" }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /projects/{id}/trace-items/{itemId}/revisions:
+    post:
+      summary: Create a new trace-item revision and stale dependent test evidence
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { name: itemId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/IfMatch' }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: "Immutable new revision, stale-evidence findings, and new ETag" }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /projects/{id}/trace-links:
+    post:
+      summary: Create a validated same-project typed trace relationship
+      parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: "Created relationship, recalculated analysis, and new ETag" }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /projects/{id}/test-executions:
+    post:
+      summary: Record current baseline-bound execution evidence for an approved test case
+      parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: "Recorded execution, superseded prior current evidence, analysis, and new ETag" }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /projects/{id}/baselines/approve:
+    post:
+      summary: Coordinator approval of a new immutable baseline after hard readiness and trace checks
+      parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: Approved baseline snapshot and new project ETag }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /projects/{id}/completion-package/evidence:
+    post:
+      summary: Replace the structured continuity evidence assessment without directly patching package status
+      parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '200': { description: "Server-computed readiness/status, recalculated health, and new ETag" }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /projects/{id}/complete:
+    post:
+      summary: Evaluate gates and, when eligible, atomically complete the project and publish its one linked catalogue study
+      parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      responses: { '200': { description: "Completion eligibility, blockers, completed project/catalogue study when successful, and the resulting current project ETag" }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /change-requests:
+    get: { summary: List change requests, responses: { '200': { description: Change requests } } }
+    post:
+      summary: Create a baseline-bound change request
+      parameters: [ { $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: Change request }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /change-requests/{id}/preview-impact:
+    post:
+      summary: Recalculate the cycle-safe blast radius
+      parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      responses: { '200': { description: Exact impact paths and stale evidence }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /change-requests/{id}/impact:
+    get:
+      summary: Read the latest persisted cycle-safe impact preview
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses: { '200': { description: "Impact paths, stale evidence, and scope risk" } }
+  /change-requests/{id}/operations:
+    get:
+      summary: Read ordered typed change operations
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses: { '200': { description: "ADD, REVISE, RETIRE, and RELINK operations" } }
+    post:
+      summary: Add one typed baseline-bound change operation
+      parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: Persisted ordered operation }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /change-requests/{id}/{decision}:
+    post:
+      summary: Coordinator approval, rejection, or return of a controlled change
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { in: path, name: decision, required: true, schema: { enum: [approve, reject, return-for-revision] } }
+        - { $ref: '#/components/parameters/IfMatch' }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '200': { description: Immutable decision; approval creates exactly one baseline N+1 }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /continuation-items:
+    get: { summary: "Search open predecessor limitations, recommendations, and unfinished work", responses: { '200': { description: Visible continuation opportunities } } }
+  /projects/{id}/continuation-claims:
+    post:
+      summary: Claim an open predecessor item for a successor objective
+      parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: Successor claim preserving predecessor history }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /continuation-claims/{id}/outcomes:
+    post:
+      summary: Append a COMPLETED, PARTIAL, DEFERRED, or INVALIDATED claim outcome
+      parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: Append-only claim outcome }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /review-queue:
+    get: { summary: Read role-specific academic review actions, responses: { '200': { description: Review queue } } }
+  /algorithm-disclosure:
+    get: { summary: "Read formula, model status, fallback, and decision boundary", responses: { '200': { description: Algorithm disclosure } } }
+  /users:
+    get:
+      summary: List persistent platform accounts
+      description: Identity-governance read intended for curators.
+      responses:
+        '200': { description: Accounts and assigned roles, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/User' } } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+  /invitations:
+    get:
+      summary: List invitations without raw tokens
+      description: Identity-governance read intended for curators. Previously returned one-time tokens are never listed again.
+      responses:
+        '200': { description: Invitation history, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Invitation' } } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+    post:
+      summary: Create a 72-hour single-use invitation
+      description: Requires CURATOR. The raw token appears only in this response and must be delivered out of band.
+      parameters: [ { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email: { type: string, format: email }
+                role: { enum: [STUDENT, ADVISER, COORDINATOR, CURATOR] }
+      responses:
+        '201': { description: Invitation including its one-time raw token, content: { application/json: { schema: { $ref: '#/components/schemas/Invitation' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: SESSION
+  parameters:
+    Id: { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+    IfMatch: { in: header, name: If-Match, required: true, schema: { type: string }, description: Exact ETag returned by the project resource; wildcard values are rejected }
+    CsrfHeader: { in: header, name: X-XSRF-TOKEN, required: true, schema: { type: string }, description: Token returned by GET /auth/csrf and paired with its session cookie }
+  responses:
+    Problem:
+      description: RFC 9457 problem detail
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+  schemas:
+    AuthView:
+      type: object
+      required: [authenticated, roles]
+      properties:
+        authenticated: { type: boolean }
+        email: { type: [string, 'null'] }
+        roles: { type: array, items: { type: string } }
+    User:
+      type: object
+      required: [id, email, displayName, status, roles]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        displayName: { type: string }
+        department: { type: [string, 'null'] }
+        status: { type: string }
+        roles: { type: array, items: { enum: [STUDENT, ADVISER, COORDINATOR, CURATOR] } }
+    Invitation:
+      type: object
+      required: [id, email, intendedRole, expiresAt, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        intendedRole: { enum: [STUDENT, ADVISER, COORDINATOR, CURATOR] }
+        expiresAt: { type: string, format: date-time }
+        acceptedAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+        oneTimeToken: { type: [string, 'null'], description: Present only in the invitation-creation response }
+    DiscoveryInput:
+      type: object
+      required: [title, problemStatement, objectives, stakeholders, siteContext, domainTerms]
+      properties:
+        title: { type: string }
+        problemStatement: { type: string }
+        objectives: { type: array, items: { type: string } }
+        stakeholders: { type: array, items: { type: string } }
+        siteContext: { type: string }
+        domainTerms: { type: array, items: { type: string } }
+    DiscoveryRun:
+      type: object
+      required: [id, status, recommendation, confidence, candidates, algorithmVersion]
+      properties:
+        id: { type: string, format: uuid }
+        status: { enum: [ASSESSED, UNASSESSED, STALE, PARTIAL] }
+        recommendation: { enum: [NEW, IMPROVE, CONTINUE, POSSIBLE_DUPLICATE, REVIEW_REQUIRED] }
+        confidence: { type: number, minimum: 0, maximum: 100 }
+        candidates: { type: array, items: { $ref: '#/components/schemas/Study' } }
+        algorithmVersion: { type: string }
+    Study:
+      type: object
+      required: [id, code, title, year, program, status, abstract, authors, keywords, problemSimilarity, solutionSimilarity, objectiveOverlap, confidence, relationship, matchReason, excerpt]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        title: { type: string }
+        year: { type: integer }
+        program: { type: string }
+        status: { enum: [COMPLETED, INCOMPLETE, SUSPENDED] }
+        abstract: { type: string }
+        authors: { type: array, items: { type: string } }
+        keywords: { type: array, items: { type: string } }
+        problemSimilarity: { type: number }
+        solutionSimilarity: { type: number }
+        objectiveOverlap: { type: number }
+        confidence: { type: number }
+        relationship: { type: string }
+        matchReason: { type: string }
+        excerpt: { type: string }
+        restricted: { type: boolean }
+    Workspace:
+      type: object
+      required: [currentUser, project, projects, studies, traceNodes, traceEdges, findings, health, reviewQueue, lineage, generatedAt]
+      additionalProperties: true
+    Problem:
+      type: object
+      required: [type, title, status, detail, instance]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string, format: uri }

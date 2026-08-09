@@ -1,0 +1,71 @@
+spring:
+  application:
+    name: ugnay-backend
+  profiles:
+    default: dev
+  jackson:
+    default-property-inclusion: non_null
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    locations: classpath:db/migration/common,classpath:db/migration/{vendor}
+  servlet:
+    multipart:
+      max-file-size: ${UGNAY_MAX_UPLOAD_SIZE:25MB}
+      max-request-size: ${UGNAY_MAX_UPLOAD_SIZE:25MB}
+  session:
+    timeout: 30m
+    jdbc:
+      initialize-schema: never
+server:
+  port: ${PORT:8080}
+  servlet:
+    session:
+      cookie:
+        http-only: true
+        same-site: lax
+  error:
+    include-message: never
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+ugnay:
+  dataset-mode: ${UGNAY_DATASET_MODE:SYNTHETIC_DEMO}
+  security:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+    public-demo-read: ${UGNAY_PUBLIC_DEMO_READ:true}
+    bootstrap-admin-email: ${UGNAY_BOOTSTRAP_ADMIN_EMAIL:admin@ugnay.local}
+    bootstrap-admin-password: ${UGNAY_BOOTSTRAP_ADMIN_PASSWORD:ChangeMe!UGNAY2026}
+  discovery:
+    model-path: ${UGNAY_EMBEDDING_MODEL_PATH:}
+    model-sha256: ${UGNAY_EMBEDDING_MODEL_SHA256:}
+    tokenizer-path: ${UGNAY_EMBEDDING_TOKENIZER_PATH:}
+    tokenizer-sha256: ${UGNAY_EMBEDDING_TOKENIZER_SHA256:}
+    algorithm-version: hybrid-v1.0.0
+  storage:
+    endpoint: ${UGNAY_STORAGE_ENDPOINT:http://localhost:9000}
+    access-key: ${UGNAY_STORAGE_ACCESS_KEY:ugnay}
+    secret-key: ${UGNAY_STORAGE_SECRET_KEY:ugnay-local-secret}
+    bucket: ${UGNAY_STORAGE_BUCKET:ugnay-documents}
+  tika:
+    max-characters: ${UGNAY_TIKA_MAX_CHARACTERS:2000000}
+    timeout-seconds: ${UGNAY_TIKA_TIMEOUT_SECONDS:30}
+  ingestion:
+    max-file-bytes: ${UGNAY_MAX_UPLOAD_BYTES:26214400}
+    extraction-workers: ${UGNAY_EXTRACTION_WORKERS:2}
+    extraction-queue-capacity: ${UGNAY_EXTRACTION_QUEUE_CAPACITY:24}
+  clamav:
+    host: ${UGNAY_CLAMAV_HOST:localhost}
+    port: ${UGNAY_CLAMAV_PORT:3310}

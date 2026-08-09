@@ -1,0 +1,50 @@
+{
+  "releaseVersion": "0.2.0",
+  "assets": {
+    "java": {
+      "name": "Eclipse Temurin Java 21 JRE",
+      "version": "21.0.12+8",
+      "fileName": "OpenJDK21U-jre_x64_windows_hotspot_21.0.12_8.zip",
+      "archiveRoot": "jdk-21.0.12+8-jre",
+      "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12%2B8/OpenJDK21U-jre_x64_windows_hotspot_21.0.12_8.zip",
+      "sha256": "b8aa18fef5edb69bee8618f99677d66d0873d22cb40d974c15ac9ffcdecf73ba"
+    },
+    "mysql": {
+      "name": "MySQL 8.4 LTS portable server",
+      "version": "8.4.10",
+      "fileName": "mysql-8.4.10-winx64.zip",
+      "archiveRoot": "mysql-8.4.10-winx64",
+      "url": "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.10-winx64.zip",
+      "sha256": "3b950db31c33fb59252568c012bd9ee5fac50811e778ca7c8f1a0dc91686cd6f"
+    },
+    "vcRuntime": {
+      "name": "Microsoft Visual C++ 2015-2022 x64 Runtime",
+      "version": "14.50",
+      "fileName": "vc_redist.x64.exe",
+      "url": "https://aka.ms/vs/17/release/vc_redist.x64.exe",
+      "sha256": "cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b"
+    },
+    "app": {
+      "name": "UGNAY self-contained application",
+      "version": "0.2.0",
+      "fileName": "ugnay-backend-0.2.0.jar",
+      "url": "https://github.com/Gabbu69/UGNAY/releases/download/v0.2.0/ugnay-backend-0.2.0.jar",
+      "sha256": "533a1ded9193abfe94d603ae95123ef7481db0059433f512303d5d123c6f4c67"
+    },
+    "model": {
+      "name": "multilingual-e5-small generic INT8 ONNX model",
+      "version": "614241f",
+      "fileName": "multilingual-e5-small-int8.onnx",
+      "url": "https://github.com/Gabbu69/UGNAY/releases/download/v0.2.0/multilingual-e5-small-int8.onnx",
+      "sha256": "739c8f25bbe6d8a6001cd2f048701da9879140cc67d4e9327716111e869dd717"
+    },
+    "tokenizer": {
+      "name": "multilingual-e5-small tokenizer bundle",
+      "version": "614241f",
+      "fileName": "multilingual-e5-small-tokenizer-v0.2.0.zip",
+      "url": "https://github.com/Gabbu69/UGNAY/releases/download/v0.2.0/multilingual-e5-small-tokenizer-v0.2.0.zip",
+      "sha256": "dc8cc013ae86c2d4cc6b10a81716dd7a6650c78a4a3f2051818e21a3ee19e61a",
+      "tokenizerSha256": "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39"
+    }
+  }
+}

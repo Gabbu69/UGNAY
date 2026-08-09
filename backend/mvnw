@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+BASE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+WRAPPER_JAR="$BASE_DIR/.mvn/wrapper/maven-wrapper.jar"
+WRAPPER_URL="https://repo.maven.apache.org/maven2/org/apache/maven/wrapper/maven-wrapper/3.3.4/maven-wrapper-3.3.4.jar"
+if [ ! -f "$WRAPPER_JAR" ]; then
+  if command -v curl >/dev/null 2>&1; then curl -fsSL "$WRAPPER_URL" -o "$WRAPPER_JAR"
+  else wget -q "$WRAPPER_URL" -O "$WRAPPER_JAR"; fi
+fi
+cd "$BASE_DIR"
+exec "${JAVA_HOME:+$JAVA_HOME/bin/}java" -Dmaven.multiModuleProjectDirectory="$BASE_DIR" -classpath "$WRAPPER_JAR" org.apache.maven.wrapper.MavenWrapperMain "$@"

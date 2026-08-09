@@ -1,0 +1,234 @@
+name: ${COMPOSE_PROJECT_NAME:-ugnay}
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ugnay}
+      MYSQL_USER: ${MYSQL_USER:-ugnay_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      TZ: UTC
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+00:00
+      - --sql-mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+    ports:
+      - "${MYSQL_BIND_ADDRESS:-127.0.0.1}:${MYSQL_PUBLISHED_PORT:-3307}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping --silent -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks: [backend]
+    security_opt:
+      - no-new-privileges:true
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-ugnay_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    ports:
+      - "${MINIO_BIND_ADDRESS:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks: [backend]
+    security_opt:
+      - no-new-privileges:true
+
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-ugnay_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+      MINIO_BUCKET: ${MINIO_BUCKET:-ugnay-documents}
+      MINIO_APP_ACCESS_KEY: ${MINIO_APP_ACCESS_KEY:-ugnay_storage_app}
+      MINIO_APP_SECRET_KEY: ${MINIO_APP_SECRET_KEY:?Set MINIO_APP_SECRET_KEY in .env}
+    entrypoint: ["/bin/sh", "-c"]
+    volumes:
+      - ./infra/minio/ugnay-app-policy.template.json:/etc/ugnay/ugnay-app-policy.template.json:ro
+    command:
+      - |
+        set -eu
+        case "$${MINIO_BUCKET}" in *[!a-z0-9.-]*|'') echo "Unsafe bucket name" >&2; exit 64;; esac
+        test "$${MINIO_APP_ACCESS_KEY}" != "$${MINIO_ROOT_USER}" || { echo "Application and MinIO root access keys must differ" >&2; exit 64; }
+        mc alias set ugnay http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        mc mb --ignore-existing "ugnay/$${MINIO_BUCKET}"
+        mc anonymous set none "ugnay/$${MINIO_BUCKET}"
+        sed "s/__BUCKET__/$${MINIO_BUCKET}/g" /etc/ugnay/ugnay-app-policy.template.json > /tmp/ugnay-app-policy.json
+        mc admin policy create ugnay ugnay-app /tmp/ugnay-app-policy.json
+        mc admin user add ugnay "$${MINIO_APP_ACCESS_KEY}" "$${MINIO_APP_SECRET_KEY}"
+        mc admin policy attach ugnay ugnay-app --user "$${MINIO_APP_ACCESS_KEY}"
+    networks: [backend]
+    security_opt:
+      - no-new-privileges:true
+
+  clamav:
+    image: clamav/clamav:1.4
+    restart: unless-stopped
+    volumes:
+      - clamav_signatures:/var/lib/clamav
+    ports:
+      - "${CLAMAV_BIND_ADDRESS:-127.0.0.1}:${CLAMAV_PUBLISHED_PORT:-3310}:3310"
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --ping=3 >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+    networks: [backend, signature-egress]
+    security_opt:
+      - no-new-privileges:true
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ugnay/app:local
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      clamav:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ugnay}
+      MYSQL_USER: ${MYSQL_USER:-ugnay_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      UGNAY_STORAGE_ENDPOINT: http://minio:9000
+      UGNAY_STORAGE_ACCESS_KEY: ${MINIO_APP_ACCESS_KEY:-ugnay_storage_app}
+      UGNAY_STORAGE_SECRET_KEY: ${MINIO_APP_SECRET_KEY:?Set MINIO_APP_SECRET_KEY in .env}
+      UGNAY_STORAGE_BUCKET: ${MINIO_BUCKET:-ugnay-documents}
+      UGNAY_CLAMAV_HOST: clamav
+      UGNAY_CLAMAV_PORT: 3310
+      UGNAY_BOOTSTRAP_ADMIN_EMAIL: ${UGNAY_BOOTSTRAP_ADMIN_EMAIL:-admin@ugnay.local}
+      UGNAY_BOOTSTRAP_ADMIN_PASSWORD: ${UGNAY_BOOTSTRAP_ADMIN_PASSWORD:?Set UGNAY_BOOTSTRAP_ADMIN_PASSWORD in .env}
+      UGNAY_PUBLIC_DEMO_READ: ${UGNAY_PUBLIC_DEMO_READ:-false}
+      UGNAY_COOKIE_SECURE: ${UGNAY_COOKIE_SECURE:-false}
+      UGNAY_MAX_UPLOAD_SIZE: ${UGNAY_MAX_UPLOAD_SIZE:-50MB}
+      UGNAY_TIKA_MAX_CHARACTERS: ${UGNAY_TIKA_MAX_CHARACTERS:-2000000}
+      UGNAY_TIKA_TIMEOUT_SECONDS: ${UGNAY_TIKA_TIMEOUT_SECONDS:-120}
+      UGNAY_EMBEDDING_MODEL_PATH: ${UGNAY_EMBEDDING_MODEL_PATH:-}
+      UGNAY_EMBEDDING_MODEL_SHA256: ${UGNAY_EMBEDDING_MODEL_SHA256:-}
+      UGNAY_EMBEDDING_TOKENIZER_PATH: ${UGNAY_EMBEDDING_TOKENIZER_PATH:-}
+      UGNAY_EMBEDDING_TOKENIZER_SHA256: ${UGNAY_EMBEDDING_TOKENIZER_SHA256:-}
+    ports:
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"
+    volumes:
+      - ./infra/model:/opt/ugnay/models:ro
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    read_only: true
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+    networks: [backend, edge]
+    security_opt:
+      - no-new-privileges:true
+
+  caddy:
+    image: caddy:2.10-alpine
+    profiles: [pilot]
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      UGNAY_DOMAIN: ${UGNAY_DOMAIN:?Set UGNAY_DOMAIN before starting the pilot profile}
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:-research-office@example.edu}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    healthcheck:
+      test: ["CMD", "caddy", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [edge]
+    security_opt:
+      - no-new-privileges:true
+
+  minio-tools:
+    image: quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z
+    profiles: [tools]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-ugnay_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+      MINIO_BUCKET: ${MINIO_BUCKET:-ugnay-documents}
+      MINIO_OPERATION: ${MINIO_OPERATION:-verify}
+      MINIO_BACKUP_NAME: ${MINIO_BACKUP_NAME:-unused}
+    volumes:
+      - "${UGNAY_BACKUP_PATH:-./.backups}:/backup"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mc alias set ugnay http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        case "$${MINIO_OPERATION}" in
+          backup)
+            test -n "$${MINIO_BACKUP_NAME}"
+            mkdir -p "/backup/$${MINIO_BACKUP_NAME}/object-storage"
+            mc mirror --overwrite "ugnay/$${MINIO_BUCKET}" "/backup/$${MINIO_BACKUP_NAME}/object-storage"
+            ;;
+          restore)
+            test -d "/backup/$${MINIO_BACKUP_NAME}/object-storage"
+            mc mirror --overwrite --remove "/backup/$${MINIO_BACKUP_NAME}/object-storage" "ugnay/$${MINIO_BUCKET}"
+            ;;
+          verify)
+            mc stat "ugnay/$${MINIO_BUCKET}"
+            ;;
+          *)
+            echo "Unsupported MINIO_OPERATION: $${MINIO_OPERATION}" >&2
+            exit 64
+            ;;
+        esac
+    networks: [backend]
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  mysql_data:
+  minio_data:
+  clamav_signatures:
+  caddy_data:
+  caddy_config:
+
+networks:
+  backend:
+    internal: true
+  edge:
+  signature-egress:

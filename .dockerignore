@@ -1,0 +1,15 @@
+.git
+.gitignore
+.env
+.env.*
+.backups
+data
+logs
+**/node_modules
+**/dist
+**/target
+**/.idea
+**/.vscode
+infra/model/multilingual-e5-small
+docs
+*.md

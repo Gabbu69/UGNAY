@@ -1,0 +1,22 @@
+spring:
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:mysql}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:ugnay}?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false
+    username: ${MYSQL_USER:ugnay}
+    password: ${MYSQL_PASSWORD}
+  jpa:
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+  session:
+    jdbc:
+      initialize-schema: never
+server:
+  forward-headers-strategy: framework
+  servlet:
+    session:
+      cookie:
+        secure: ${UGNAY_COOKIE_SECURE:true}
+ugnay:
+  security:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:}
+    public-demo-read: ${UGNAY_PUBLIC_DEMO_READ:false}

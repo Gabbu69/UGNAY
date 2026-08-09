@@ -1,0 +1,113 @@
+name: Verify UGNAY
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root-ci-password
+          MYSQL_DATABASE: ugnay
+          MYSQL_USER: ugnay
+          MYSQL_PASSWORD: ugnay-ci-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot-ci-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Verify frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run lint
+          npm test -- --run
+          npm run build
+
+      - name: Bundle frontend and verify backend
+        run: |
+          mkdir -p backend/target/generated-static
+          cp -R frontend/dist/. backend/target/generated-static/
+          chmod +x backend/mvnw
+          backend/mvnw -q test
+          backend/mvnw -q -DskipTests package
+
+      - name: Boot packaged application against MySQL 8.4
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: 3306
+          MYSQL_DATABASE: ugnay
+          MYSQL_USER: ugnay
+          MYSQL_PASSWORD: ugnay-ci-password
+          UGNAY_BOOTSTRAP_ADMIN_EMAIL: ci-admin@ugnay.local
+          UGNAY_BOOTSTRAP_ADMIN_PASSWORD: CI-only-password-2026
+          UGNAY_DATASET_MODE: EMPTY
+          UGNAY_DOCUMENT_ROOT: /tmp/ugnay-documents
+          PORT: 18080
+        run: |
+          java -Xms96m -Xmx512m -XX:+UseSerialGC -jar backend/target/ugnay-backend-0.2.0.jar --spring.profiles.active=lite > /tmp/ugnay.log 2>&1 &
+          echo $! > /tmp/ugnay.pid
+          trap 'kill $(cat /tmp/ugnay.pid) 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:18080/actuator/health | grep -q '"status":"UP"'; then
+              curl --fail --silent http://127.0.0.1:18080/ | grep -q '<div id="root"></div>'
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/ugnay.log
+          exit 1
+
+      - name: Upload verified JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: ugnay-backend-0.2.0
+          path: backend/target/ugnay-backend-0.2.0.jar
+          if-no-files-found: error
+
+  windows-contracts:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse Windows scripts and pinned manifests
+        shell: powershell
+        run: |
+          $errors = @()
+          Get-ChildItem scripts -Recurse -Filter *.ps1 -File | ForEach-Object {
+            $tokens = $null
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors)
+            $errors += $parseErrors
+          }
+          if ($errors.Count) { throw ($errors -join "`n") }
+          Get-ChildItem infra -Recurse -Filter *.json -File | ForEach-Object {
+            Get-Content -Raw -LiteralPath $_.FullName | ConvertFrom-Json | Out-Null
+          }
+          $manifest = Get-Content -Raw infra/windows-lite/runtime-manifest.json | ConvertFrom-Json
+          if ($manifest.assets.app.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Release JAR checksum is not pinned.' }
+          if (-not (Test-Path 'Start UGNAY.cmd') -or -not (Test-Path 'AGENTS.md')) { throw 'Windows or AI handoff entrypoint is missing.' }

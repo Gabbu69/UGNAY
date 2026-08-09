@@ -1,0 +1,31 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Build outputs
+backend/target/
+frontend/dist/
+frontend/node_modules/
+backend/target/generated-static/
+coverage/
+playwright-report/
+test-results/
+
+# Runtime data and local backups
+.backups/
+data/
+logs/
+.runtime/
+*.log
+
+# Local semantic model assets (the manifest remains tracked)
+infra/model/multilingual-e5-small/
+
+# IDE and operating-system files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
