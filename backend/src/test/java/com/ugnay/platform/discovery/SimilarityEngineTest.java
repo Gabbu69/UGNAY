@@ -37,6 +37,21 @@ class SimilarityEngineTest {
     }
 
     @Test
+    void polynomialObjectiveAssignmentPreservesTheExactMaximum() {
+        double[][] scores = {
+                { 10, 90, 20 },
+                { 80, 15, 25 },
+                { 30, 35, 70 },
+                { 60, 50, 40 }
+        };
+
+        assertThat(SimilarityEngine.maximumOneToOneScore(scores)).isEqualTo(240.0);
+        assertThat(SimilarityEngine.maximumOneToOneScore(new double[][] {
+                { 100 }, { 100 }
+        })).isEqualTo(100.0);
+    }
+
+    @Test
     void symmetricE5InputsUseQueryPrefixOnBothSides() {
         CapturingProvider provider = new CapturingProvider();
         SimilarityEngine engine = new SimilarityEngine(provider);

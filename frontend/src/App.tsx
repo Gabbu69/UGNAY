@@ -9,6 +9,7 @@ const AlignmentWorkspace = lazy(() => import('./pages/AlignmentWorkspace'))
 const ChangeLab = lazy(() => import('./pages/ChangeLab'))
 const ContinuityExplorer = lazy(() => import('./pages/ContinuityExplorer'))
 const ReviewQueue = lazy(() => import('./pages/ReviewQueue'))
+const ResearchLaboratory = lazy(() => import('./pages/ResearchLaboratory'))
 
 function PageFallback() {
   return (
@@ -27,6 +28,9 @@ export default function App() {
         <Route path="/atlas" element={<Suspense fallback={<PageFallback />}><ResearchAtlas /></Suspense>} />
         <Route path="/intake" element={<Suspense fallback={<PageFallback />}><IntakeStudio /></Suspense>} />
         <Route path="/decision" element={<Suspense fallback={<PageFallback />}><DecisionRoom /></Suspense>} />
+        <Route path="/research-lab/query" element={<Suspense fallback={<PageFallback />}><ResearchLaboratory /></Suspense>} />
+        <Route path="/research-lab/evaluation" element={<Suspense fallback={<PageFallback />}><ResearchLaboratory /></Suspense>} />
+        <Route path="/research-lab/warehouse" element={<Suspense fallback={<PageFallback />}><ResearchLaboratory /></Suspense>} />
         <Route path="/alignment" element={<Suspense fallback={<PageFallback />}><AlignmentWorkspace /></Suspense>} />
         <Route path="/changes" element={<Suspense fallback={<PageFallback />}><ChangeLab /></Suspense>} />
         <Route path="/continuity" element={<Suspense fallback={<PageFallback />}><ContinuityExplorer /></Suspense>} />

@@ -81,7 +81,7 @@ public class JdbcWorkspaceStore {
 
     @Transactional
     public void saveStudy(Study study) {
-        byte[] departmentId = departmentId(study.department());
+        byte[] departmentId = optionalDepartmentId(study.department());
         if (exists("studies", study.id())) {
             jdbc.update("UPDATE studies SET department_id=?, institutional_code=?, title=?, abstract_text=?, problem_statement=?, methodology=?, features_text=?, data_sources_text=?, technology_text=?, intended_users_text=?, stakeholders_text=?, site_context=?, keywords_text=?, academic_year=?, lifecycle_status=?, visibility=?, row_version=row_version+1 WHERE id=?",
                     departmentId, study.institutionalCode(), study.title(), study.abstractText(), study.problemStatement(),
@@ -882,6 +882,14 @@ public class JdbcWorkspaceStore {
             if (!matches.isEmpty()) return matches.getFirst();
         }
         return defaultDepartmentId();
+    }
+
+    private byte[] optionalDepartmentId(String departmentName) {
+        if (departmentName == null || departmentName.isBlank()) return null;
+        List<byte[]> matches = jdbc.query(
+                "SELECT id FROM departments WHERE LOWER(name)=LOWER(?) OR LOWER(code)=LOWER(?) ORDER BY code",
+                (row, index) -> row.getBytes(1), departmentName.strip(), departmentName.strip());
+        return matches.isEmpty() ? null : matches.getFirst();
     }
 
     private byte[] defaultDepartmentId() {

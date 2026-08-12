@@ -16,6 +16,9 @@ export default function ContinuityExplorer() {
   const [selected, setSelected] = useState<string>()
   const [evidenceOpen, setEvidenceOpen] = useState(false)
   const [message, setMessage] = useState('')
+  const [claimingItemId, setClaimingItemId] = useState('')
+  const [successorObjectiveId, setSuccessorObjectiveId] = useState('')
+  const [claimRationale, setClaimRationale] = useState('')
   const packageQuery = useQuery({ queryKey: ['completion-package', project?.id], queryFn: () => getCompletionPackage(project?.id ?? ''), enabled: data?.source === 'LIVE' && project?.id !== 'unavailable' })
   const opportunityQuery = useQuery({ queryKey: ['continuation-items'], queryFn: getContinuationItems, enabled: data?.source === 'LIVE' })
   const traceQuery = useQuery({ queryKey: ['traceability', project?.id], queryFn: () => getProjectTraceability(project?.id ?? ''), enabled: data?.source === 'LIVE' && project?.id !== 'unavailable' })
@@ -25,7 +28,14 @@ export default function ContinuityExplorer() {
   const canComplete = data?.source === 'LIVE' && auth?.session.authenticated === true && roles.includes('COORDINATOR')
   const canAuthor = data?.source === 'LIVE' && auth?.session.authenticated === true && roles.some((role) => ['STUDENT', 'ADVISER', 'COORDINATOR'].includes(role))
   const completion = useMutation({ mutationFn: () => assessProjectCompletion(project?.id ?? ''), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace'] }) })
-  const claim = useMutation({ mutationFn: (itemId: string) => claimContinuationItem(project?.id ?? '', itemId, objectives[0]?.id ?? '', 'This open predecessor item directly supports the selected successor objective.'), onSuccess: () => { setMessage('Continuation item claimed without modifying predecessor history.'); queryClient.invalidateQueries({ queryKey: ['continuation-items'] }) } })
+  const claim = useMutation({
+    mutationFn: (input: { itemId: string; objectiveId: string; rationale: string }) => claimContinuationItem(project?.id ?? '', input.itemId, input.objectiveId, input.rationale),
+    onSuccess: () => {
+      setMessage('Continuation item claimed without modifying predecessor history.')
+      setClaimingItemId(''); setSuccessorObjectiveId(''); setClaimRationale('')
+      queryClient.invalidateQueries({ queryKey: ['continuation-items'] })
+    },
+  })
   const error = completion.error instanceof ApiProblem ? completion.error.detail : completion.error?.message
 
   return (
@@ -55,7 +65,7 @@ export default function ContinuityExplorer() {
       </div>
 
       <section className="continuation-items"><div className="section-heading"><div><span>OPEN WORK, PRESERVED</span><h2>Continuation opportunities</h2></div><p>A claim appends successor intent; it never edits the predecessor.</p></div>
-        <div className="opportunity-grid">{opportunityQuery.data?.length ? opportunityQuery.data.map((item) => <article key={item.id} className={item.claimed ? 'is-claimed' : ''}><span>{item.type}</span><h3>{item.title}</h3><p>{item.description}</p><div><small>Source study {item.studyId.slice(0, 8)}</small><button className="text-button" disabled={!canAuthor || item.claimed || !objectives.length || claim.isPending} onClick={() => claim.mutate(item.id)}>{item.claimed ? 'Claimed' : objectives.length ? 'Claim for successor' : 'Add an objective first'} <ArrowRight size={14} /></button></div></article>) : <article><span>UNASSESSED</span><h3>No opportunities found</h3><p>Published predecessor limitations and unfinished work will appear here.</p></article>}</div>
+        <div className="opportunity-grid">{opportunityQuery.data?.length ? opportunityQuery.data.map((item) => <article key={item.id} className={item.claimed ? 'is-claimed' : ''}><span>{item.type}</span><h3>{item.title}</h3><p>{item.description}</p><div><small>Source study {item.studyId.slice(0, 8)}</small><button className="text-button" disabled={!canAuthor || item.claimed || !objectives.length || claim.isPending} onClick={() => { setClaimingItemId(item.id); setSuccessorObjectiveId(''); setClaimRationale(''); claim.reset() }}>{item.claimed ? 'Claimed' : objectives.length ? 'Claim for successor' : 'Add an objective first'} <ArrowRight size={14} /></button></div>{claimingItemId === item.id && !item.claimed ? <form className="continuation-claim-form" onSubmit={(event) => { event.preventDefault(); claim.mutate({ itemId: item.id, objectiveId: successorObjectiveId, rationale: claimRationale }) }}><label><span>Successor objective</span><select required value={successorObjectiveId} onChange={(event) => setSuccessorObjectiveId(event.target.value)}><option value="">Choose the objective this work supports</option>{objectives.map((objective) => <option key={objective.id} value={objective.id}>{objective.key} · {objective.title}</option>)}</select></label><label><span>Claim rationale</span><textarea required minLength={12} value={claimRationale} onChange={(event) => setClaimRationale(event.target.value)} placeholder="Explain the evidence-based connection without changing predecessor history." /></label>{claim.isError ? <small className="form-alert">{claim.error instanceof ApiProblem ? claim.error.detail : claim.error.message}</small> : null}<div><button type="button" className="button button-ghost" onClick={() => setClaimingItemId('')}>Cancel</button><button className="button button-secondary" disabled={!successorObjectiveId || claimRationale.trim().length < 12 || claim.isPending}>{claim.isPending ? 'Recording…' : 'Record claim'}</button></div></form> : null}</article>) : <article><span>UNASSESSED</span><h3>No opportunities found</h3><p>Published predecessor limitations and unfinished work will appear here.</p></article>}</div>
       </section>
       <CompletionEvidenceStudio open={evidenceOpen} onOpenChange={setEvidenceOpen} projectId={project?.id ?? ''} source={data?.source ?? 'UNAVAILABLE'} roles={roles} onRecorded={setMessage} />
     </div>

@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./index-extra.css";
+@import "./research-lab.css";
 @import "./auth.css";
 
 :root {

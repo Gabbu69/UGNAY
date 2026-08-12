@@ -44,8 +44,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -134,6 +137,7 @@ public class WorkspaceService {
     }
 
     @EventListener(ApplicationReadyEvent.class)
+    @Order(0)
     @Transactional
     public synchronized void initializePersistence() {
         clearWorkspace();
@@ -183,7 +187,13 @@ public class WorkspaceService {
                 "activeProjects", projects());
     }
 
-    public List<Study> studies() { return studies.values().stream().sorted(Comparator.comparing(Study::academicYear).reversed()).toList(); }
+    public List<Study> studies() {
+        return studies.values().stream()
+                .sorted(Comparator.comparing(Study::academicYear,
+                                Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(Study::title, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
+                .toList();
+    }
     public Study study(UUID id) { return required(studies, id, "Study"); }
     public List<ProblemCase> problems() { return problems.values().stream().sorted(Comparator.comparing(ProblemCase::createdAt).reversed()).toList(); }
     public ProblemCase problem(UUID id) { return required(problems, id, "Problem case"); }
@@ -208,16 +218,29 @@ public class WorkspaceService {
     public synchronized Study importStudy(String code, String title, String academicYear, String abstractText,
                                           String problemStatement, List<String> objectives, List<String> keywords,
                                           String methodology, String features, String stakeholders, String siteContext) {
+        return importStudy(code, title, academicYear, abstractText, problemStatement, objectives, keywords,
+                methodology, features, stakeholders, siteContext, null, null, null, null, null, null, null);
+    }
+
+    @Transactional
+    public synchronized Study importStudy(String code, String title, String academicYear, String abstractText,
+                                          String problemStatement, List<String> objectives, List<String> keywords,
+                                          String methodology, String features, String stakeholders, String siteContext,
+                                          String department, String dataSources, String technology, String intendedUsers,
+                                          String visibility, String lifecycleStatus, String actorEmail) {
         if (studies.values().stream().anyMatch(study -> study.institutionalCode().equalsIgnoreCase(code))) {
             throw new IllegalArgumentException("A study with institutional code " + code + " already exists.");
         }
-        Study study = new Study(UUID.randomUUID(), code, title, academicYear,
-                "College of Information and Computing Sciences", "COMPLETED", "CAMPUS",
+        Study study = new Study(UUID.randomUUID(), code, title, blankToNull(academicYear),
+                blankToNull(department),
+                blank(lifecycleStatus) ? "INCOMPLETE" : lifecycleStatus.strip().toUpperCase(),
+                blank(visibility) ? "RESTRICTED" : visibility.strip().toUpperCase(),
                 abstractText, problemStatement, safeList(objectives), safeList(keywords), methodology, features,
-                "Not specified", "Not specified", "Not specified", stakeholders, siteContext, List.of());
-        studies.put(study.id(), study);
+                blank(dataSources) ? "" : dataSources.strip(), blank(technology) ? "" : technology.strip(),
+                blank(intendedUsers) ? "" : intendedUsers.strip(), stakeholders, siteContext, List.of());
         store.saveStudy(study);
-        audit.append(null, "STUDY_METADATA_IMPORTED", "STUDY", study.id(), "Imported reviewed catalogue metadata.", Map.of("code", code));
+        audit.append(actorEmail, "STUDY_METADATA_IMPORTED", "STUDY", study.id(), "Imported reviewed catalogue metadata.", Map.of("code", code));
+        afterCommit(() -> studies.put(study.id(), study));
         return study;
     }
 
@@ -358,7 +381,7 @@ public class WorkspaceService {
         return decision;
     }
 
-    private RoutingEvidenceRepository.RouteAssessment routeAssessment(UUID proposalId, UUID predecessorId) {
+    public RoutingEvidenceRepository.RouteAssessment routeAssessment(UUID proposalId, UUID predecessorId) {
         if (routingEvidence == null || predecessorId == null) {
             return new RoutingEvidenceRepository.RouteAssessment(false, 0, false, false, false, 0);
         }
@@ -1084,12 +1107,10 @@ public class WorkspaceService {
         Instant now = Instant.now();
         Project completed = new Project(project.id(), project.code(), project.title(), ProjectStatus.COMPLETED, project.route(),
                 project.department(), project.currentBaselineId(), project.baselineNumber(), project.team(), now, project.rowVersion() + 1);
-        projects.put(project.id(), completed);
         store.saveProject(completed, projectProposalIds.get(project.id()));
         CompletionPackage completedPackage = new CompletionPackage(pack.id(), pack.projectId(), "COMPLETE", pack.readinessScore(), true,
                 pack.criteria(), List.of(), pack.repositoryUrl(), pack.commitHash(), pack.setupInstructions(), pack.limitations(),
                 pack.recommendations(), pack.unfinishedWork());
-        packages.put(project.id(), completedPackage);
         store.saveCompletion(completedPackage);
 
         Proposal proposal = proposal(projectProposalIds.get(project.id()));
@@ -1111,10 +1132,28 @@ public class WorkspaceService {
         UUID persistedId = store.saveCompletedStudy(catalogueStudy, project.id());
         Study persisted = persistedId.equals(studyId) ? catalogueStudy
                 : store.studies().stream().filter(candidate -> candidate.id().equals(persistedId)).findFirst().orElseThrow();
-        studies.put(persisted.id(), persisted);
         audit.append(actorEmail, "PROJECT_COMPLETED", "PROJECT", project.id(),
                 "Completed the project and published exactly one linked continuity study.", Map.of("studyId", persisted.id().toString()));
+        afterCommit(() -> {
+            projects.put(project.id(), completed);
+            packages.put(project.id(), completedPackage);
+            studies.put(persisted.id(), persisted);
+        });
         return new CompletionResult(completed, persisted);
+    }
+
+    static void afterCommit(Runnable action) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                && TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    action.run();
+                }
+            });
+            return;
+        }
+        action.run();
     }
 
     private static void appendContinuation(List<ContinuationItem> target, UUID studyId, String type, List<String> values) {

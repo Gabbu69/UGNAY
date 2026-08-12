@@ -1,7 +1,7 @@
-import { useState, type ElementType } from 'react'
-import { AnimatePresence, motion } from 'motion/react'
+import { useEffect, useRef, useState, type ElementType } from 'react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import {
-  Activity, ArrowUpRight, Beaker, BookOpenText, ChevronDown, GitBranch,
+  Activity, ArrowUpRight, Beaker, BookOpenText, ChevronDown, FlaskConical, GitBranch,
   LayoutList, Menu, Network, PanelLeftClose, ScanSearch, UserRound, Waypoints, X,
 } from 'lucide-react'
 import { NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom'
@@ -22,6 +22,7 @@ const navigation: NavigationItem[] = [
   { to: '/atlas', label: 'Research Atlas', shortLabel: 'Atlas', icon: Network, section: 'discover' },
   { to: '/intake', label: 'Intake Studio', shortLabel: 'Intake', icon: BookOpenText, section: 'discover' },
   { to: '/decision', label: 'Decision Room', shortLabel: 'Decision', icon: ScanSearch, section: 'discover' },
+  { to: '/research-lab/query', label: 'Research Laboratory', shortLabel: 'Lab', icon: FlaskConical, section: 'discover' },
   { to: '/alignment', label: 'Alignment Workspace', shortLabel: 'Alignment', icon: Waypoints, section: 'develop', projectScoped: true },
   { to: '/changes', label: 'Change Lab', shortLabel: 'Changes', icon: Beaker, section: 'develop', projectScoped: true },
   { to: '/continuity', label: 'Continuity Explorer', shortLabel: 'Continuity', icon: GitBranch, section: 'preserve', projectScoped: true },
@@ -65,6 +66,7 @@ function itemTarget(item: NavigationItem, projectId?: string) {
 }
 
 function SideNavigation({ onNavigate, projectId }: { onNavigate?: () => void; projectId?: string }) {
+  const location = useLocation()
   return (
     <nav className="side-navigation" aria-label="UGNAY workspaces">
       {(Object.keys(sectionLabels) as Array<keyof typeof sectionLabels>).map((section) => (
@@ -72,7 +74,8 @@ function SideNavigation({ onNavigate, projectId }: { onNavigate?: () => void; pr
           <p>{sectionLabels[section]}</p>
           {navigation.filter((item) => item.section === section).map((item) => {
             const { to, label, icon: Icon } = item
-            return <NavLink key={to} to={itemTarget(item, projectId)} onClick={onNavigate} className={({ isActive }) => isActive ? 'nav-link is-active' : 'nav-link'}>
+            const labActive = to.startsWith('/research-lab') && location.pathname.startsWith('/research-lab')
+            return <NavLink key={to} to={itemTarget(item, projectId)} onClick={onNavigate} className={({ isActive }) => isActive || labActive ? 'nav-link is-active' : 'nav-link'}>
               <Icon size={17} strokeWidth={1.8} />
               <span>{label}</span>
               <i aria-hidden="true" />
@@ -90,6 +93,9 @@ export function AppShell() {
   const { projectId } = useParams()
   const [mobileOpen, setMobileOpen] = useState(false)
   const [accountOpen, setAccountOpen] = useState(false)
+  const menuButtonRef = useRef<HTMLButtonElement>(null)
+  const drawerRef = useRef<HTMLElement>(null)
+  const reduceMotion = useReducedMotion()
   const workspaceQuery = useWorkspace()
   const authQuery = useAuthSession()
   const workspace = workspaceQuery.data?.data
@@ -99,7 +105,9 @@ export function AppShell() {
   const accountName = isAuthenticated ? session.email ?? 'Authenticated account' : auth?.source === 'LIVE' ? 'Sign in' : 'Pilot access'
   const accountDetail = isAuthenticated ? roleLabel(session.roles[0]) : auth?.source === 'LIVE' ? 'Invite-only account' : 'Session unavailable'
   const accountInitials = isAuthenticated && session.email ? emailInitials(session.email) : auth?.source === 'LIVE' ? 'SI' : 'PA'
-  const current = navigation.find((item) => location.pathname === item.to || location.pathname.endsWith(item.to))
+  const current = navigation.find((item) => item.to.startsWith('/research-lab')
+    ? location.pathname.startsWith('/research-lab')
+    : location.pathname === item.to || location.pathname.endsWith(item.to))
   const selectedProjectId = projectId ?? workspace?.project.id
   const linkedArtifacts = workspace ? new Set(workspace.traceEdges.flatMap((edge) => [edge.source, edge.target])).size : 0
   const traceArtifactCount = workspace?.traceNodes.length ?? 0
@@ -107,6 +115,36 @@ export function AppShell() {
     const suffix = current?.projectScoped ? current.to : '/alignment'
     navigate(`/projects/${nextProjectId}${suffix}`)
   }
+
+  useEffect(() => {
+    if (!mobileOpen) return
+    const drawer = drawerRef.current
+    const menuButton = menuButtonRef.current
+    const focusable = () => Array.from(drawer?.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? [])
+    focusable()[0]?.focus()
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setMobileOpen(false)
+        return
+      }
+      if (event.key !== 'Tab') return
+      const elements = focusable()
+      if (!elements.length) return
+      const first = elements[0]
+      const last = elements[elements.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault(); last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault(); first.focus()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      if (drawer?.contains(document.activeElement)) menuButton?.focus()
+    }
+  }, [mobileOpen])
 
   return (
     <div className="app-shell">
@@ -137,12 +175,17 @@ export function AppShell() {
               className="mobile-scrim"
               aria-label="Close navigation"
               onClick={() => setMobileOpen(false)}
-              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              initial={reduceMotion ? false : { opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             />
             <motion.aside
+              ref={drawerRef}
+              id="mobile-navigation"
               className="mobile-drawer"
-              initial={{ x: '-100%' }} animate={{ x: 0 }} exit={{ x: '-100%' }}
-              transition={{ duration: 0.2, ease: 'easeOut' }}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Primary navigation"
+              initial={reduceMotion ? false : { x: '-100%' }} animate={{ x: 0 }} exit={{ x: '-100%' }}
+              transition={{ duration: reduceMotion ? 0 : 0.2, ease: 'easeOut' }}
             >
               <div className="brand-lockup">
                 <UgnayMark />
@@ -170,7 +213,7 @@ export function AppShell() {
       <div className="app-frame">
         <header className="topbar">
           <div className="topbar-leading">
-            <button className="icon-button menu-button" onClick={() => setMobileOpen(true)} aria-label="Open navigation"><Menu size={20} /></button>
+            <button ref={menuButtonRef} className="icon-button menu-button" onClick={() => setMobileOpen(true)} aria-label="Open navigation" aria-expanded={mobileOpen} aria-controls="mobile-navigation"><Menu size={20} /></button>
             <PanelLeftClose className="topbar-thread-icon" size={17} aria-hidden="true" />
             <span>{current?.shortLabel ?? 'Workspace'}</span>
             <i />
@@ -201,10 +244,10 @@ export function AppShell() {
             <motion.div
               className="route-stage"
               key={location.pathname}
-              initial={{ opacity: 0, y: 8 }}
+              initial={reduceMotion ? false : { opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.18, ease: 'easeOut' }}
+              transition={{ duration: reduceMotion ? 0 : 0.18, ease: 'easeOut' }}
             >
               <Outlet />
             </motion.div>
@@ -214,7 +257,8 @@ export function AppShell() {
         <nav className="mobile-tabs" aria-label="Primary mobile navigation">
           {navigation.slice(0, 5).map((item) => {
             const { to, shortLabel, icon: Icon } = item
-            return <NavLink key={to} to={itemTarget(item, selectedProjectId)} className={({ isActive }) => isActive ? 'is-active' : ''}>
+            const labActive = to.startsWith('/research-lab') && location.pathname.startsWith('/research-lab')
+            return <NavLink key={to} to={itemTarget(item, selectedProjectId)} className={({ isActive }) => isActive || labActive ? 'is-active' : ''}>
               <Icon size={18} />
               <span>{shortLabel}</span>
             </NavLink>

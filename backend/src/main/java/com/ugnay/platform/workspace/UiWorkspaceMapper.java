@@ -18,6 +18,7 @@ import com.ugnay.platform.shared.PlatformModels.TraceLink;
 import com.ugnay.platform.shared.PlatformModels.Traceability;
 import com.ugnay.platform.identity.JdbcIdentityService;
 import com.ugnay.platform.identity.ProjectAccessService;
+import com.ugnay.platform.identity.StudyVisibilityPolicy;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Component;
 
@@ -37,15 +38,17 @@ public final class UiWorkspaceMapper {
     private final CatalogueMetadataRepository catalogueMetadata;
     private final WorkflowActionService workflowActions;
     private final ProjectAccessService projectAccess;
+    private final StudyVisibilityPolicy studyVisibility;
 
     public UiWorkspaceMapper(WorkspaceService workspace, JdbcIdentityService identities,
                              CatalogueMetadataRepository catalogueMetadata, WorkflowActionService workflowActions,
-                             ProjectAccessService projectAccess) {
+                             ProjectAccessService projectAccess, StudyVisibilityPolicy studyVisibility) {
         this.workspace = workspace;
         this.identities = identities;
         this.catalogueMetadata = catalogueMetadata;
         this.workflowActions = workflowActions;
         this.projectAccess = projectAccess;
+        this.studyVisibility = studyVisibility;
     }
 
     public UiContracts.WorkspaceView workspace(Authentication authentication) {
@@ -103,6 +106,19 @@ public final class UiWorkspaceMapper {
         return rankedStudies(matches);
     }
 
+    public List<UiContracts.StudyView> studies(Authentication authentication) {
+        DiscoveryRun discovery = workspace.discoveries().stream().findFirst().orElse(null);
+        Map<UUID, DiscoveryCandidate> matches = discovery == null ? Map.of() : discovery.candidates().stream()
+                .collect(Collectors.toMap(DiscoveryCandidate::studyId, value -> value));
+        StudyVisibilityPolicy.Scope scope = studyVisibility.scope(authentication);
+        return workspace.studies().stream()
+                .filter(value -> studyVisibility.canView(scope, value.visibility(), value.department()))
+                .sorted(Comparator.comparingInt(value -> matches.containsKey(value.id())
+                        ? matches.get(value.id()).rank() : Integer.MAX_VALUE))
+                .map(value -> study(value, matches.get(value.id()), !scope.curator()))
+                .toList();
+    }
+
     CatalogueMetadataRepository catalogueMetadata() { return catalogueMetadata; }
 
     private List<UiContracts.StudyView> rankedStudies(Map<UUID, DiscoveryCandidate> matches) {
@@ -129,7 +145,12 @@ public final class UiWorkspaceMapper {
     }
 
     private UiContracts.StudyView study(Study study, DiscoveryCandidate candidate) {
-        boolean restricted = "RESTRICTED".equals(study.visibility()) || "EMBARGOED".equals(study.visibility());
+        return study(study, candidate, true);
+    }
+
+    private UiContracts.StudyView study(Study study, DiscoveryCandidate candidate, boolean protectRestricted) {
+        boolean restricted = protectRestricted
+                && ("RESTRICTED".equals(study.visibility()) || "EMBARGOED".equals(study.visibility()));
         double problem = candidate == null ? 0 : candidate.problemScore();
         double solution = candidate == null ? 0 : candidate.solutionScore();
         double objective = candidate == null ? 0 : candidate.objectiveScore();
@@ -146,9 +167,9 @@ public final class UiWorkspaceMapper {
         }
         CatalogueMetadataRepository.Metadata metadata = catalogueMetadata.metadata(study.id());
         return new UiContracts.StudyView(study.id(), study.institutionalCode(), study.title(), parseYear(study.academicYear()),
-                metadata.program(), study.lifecycleStatus(), restricted ? "Restricted catalogue record." : study.abstractText(),
+                metadata.program() == null ? "Unavailable" : metadata.program(), study.lifecycleStatus(), restricted ? "Restricted catalogue record." : study.abstractText(),
                 restricted ? List.of() : metadata.authors(), study.keywords(),
-                problem, solution, objective, confidence, metadata.relationship(), reason, excerpt,
+                problem, solution, objective, confidence, metadata.relationship() == null ? "UNAVAILABLE" : metadata.relationship(), reason, excerpt,
                 restricted);
     }
 

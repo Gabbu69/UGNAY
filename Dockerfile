@@ -25,7 +25,7 @@ RUN apt-get update \
     && useradd --system --uid 10001 --gid ugnay --home-dir /opt/ugnay --shell /usr/sbin/nologin ugnay
 
 WORKDIR /opt/ugnay
-COPY --from=backend-build --chown=ugnay:ugnay /workspace/backend/target/ugnay-backend-0.1.0.jar ./app.jar
+COPY --from=backend-build --chown=ugnay:ugnay /workspace/backend/target/ugnay-backend-*.jar ./app.jar
 
 USER 10001:10001
 EXPOSE 8080

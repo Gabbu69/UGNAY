@@ -252,7 +252,7 @@ public final class SimilarityEngine {
                         requestEmbeddings::embed, studyEmbedding).score();
             }
         }
-        double maximum = match(matrix, 0, 0L, new HashMap<>());
+        double maximum = maximumOneToOneScore(matrix);
         return round(maximum / Math.max(proposed.size(), prior.size()));
     }
 
@@ -325,18 +325,88 @@ public final class SimilarityEngine {
         return new ComponentScore(name, round(raw), weight, round(raw * weight), explanation, terms);
     }
 
-    private static double match(double[][] matrix, int row, long used, Map<Long, Double> memo) {
-        if (row >= matrix.length) return 0;
-        long key = (((long) row) << 32) ^ used;
-        Double existing = memo.get(key);
-        if (existing != null) return existing;
-        double best = match(matrix, row + 1, used, memo);
-        for (int column = 0; column < matrix[row].length; column++) {
-            long bit = 1L << column;
-            if ((used & bit) == 0) best = Math.max(best, matrix[row][column] + match(matrix, row + 1, used | bit, memo));
+    /**
+     * Maximum-weight one-to-one assignment in O(n^3) time. The square padding
+     * represents unmatched objectives with zero contribution, preserving the
+     * previous matching semantics without its exponential bit-mask search.
+     */
+    static double maximumOneToOneScore(double[][] matrix) {
+        if (matrix == null || matrix.length == 0) return 0;
+        int columns = matrix[0] == null ? 0 : matrix[0].length;
+        if (columns == 0) return 0;
+        for (double[] row : matrix) {
+            if (row == null || row.length != columns) {
+                throw new IllegalArgumentException("The objective-score matrix must be rectangular.");
+            }
         }
-        memo.put(key, best);
-        return best;
+
+        int size = Math.max(matrix.length, columns);
+        double maximumWeight = 0;
+        for (double[] row : matrix) {
+            for (double weight : row) maximumWeight = Math.max(maximumWeight, weight);
+        }
+
+        // Hungarian minimization over (maximumWeight - score). Arrays are
+        // one-based to follow the augmenting-path formulation directly.
+        double[] rowPotential = new double[size + 1];
+        double[] columnPotential = new double[size + 1];
+        int[] columnMatch = new int[size + 1];
+        int[] predecessor = new int[size + 1];
+        final double epsilon = 1e-12;
+        for (int row = 1; row <= size; row++) {
+            columnMatch[0] = row;
+            double[] minimum = new double[size + 1];
+            java.util.Arrays.fill(minimum, Double.POSITIVE_INFINITY);
+            boolean[] used = new boolean[size + 1];
+            int currentColumn = 0;
+            do {
+                used[currentColumn] = true;
+                int currentRow = columnMatch[currentColumn];
+                double delta = Double.POSITIVE_INFINITY;
+                int nextColumn = 0;
+                for (int column = 1; column <= size; column++) {
+                    if (used[column]) continue;
+                    double weight = currentRow <= matrix.length && column <= columns
+                            ? matrix[currentRow - 1][column - 1] : 0;
+                    double reducedCost = maximumWeight - weight
+                            - rowPotential[currentRow] - columnPotential[column];
+                    if (reducedCost < minimum[column] - epsilon) {
+                        minimum[column] = reducedCost;
+                        predecessor[column] = currentColumn;
+                    }
+                    if (minimum[column] < delta - epsilon
+                            || (Math.abs(minimum[column] - delta) <= epsilon
+                            && (nextColumn == 0 || column < nextColumn))) {
+                        delta = minimum[column];
+                        nextColumn = column;
+                    }
+                }
+                for (int column = 0; column <= size; column++) {
+                    if (used[column]) {
+                        rowPotential[columnMatch[column]] += delta;
+                        columnPotential[column] -= delta;
+                    } else {
+                        minimum[column] -= delta;
+                    }
+                }
+                currentColumn = nextColumn;
+            } while (columnMatch[currentColumn] != 0);
+
+            do {
+                int previousColumn = predecessor[currentColumn];
+                columnMatch[currentColumn] = columnMatch[previousColumn];
+                currentColumn = previousColumn;
+            } while (currentColumn != 0);
+        }
+
+        int[] assignedColumn = new int[size + 1];
+        for (int column = 1; column <= size; column++) assignedColumn[columnMatch[column]] = column;
+        double result = 0;
+        for (int row = 1; row <= matrix.length; row++) {
+            int column = assignedColumn[row];
+            if (column > 0 && column <= columns) result += matrix[row - 1][column - 1];
+        }
+        return result;
     }
 
     private static boolean augmentObjectiveMatch(int proposalIndex, List<List<Integer>> related,

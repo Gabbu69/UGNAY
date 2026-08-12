@@ -10,6 +10,8 @@ The pilot has four boundaries:
 - Spring Boot is the authorization and audit boundary.
 - MySQL and the selected document/scanner adapters are private infrastructure services.
 - The ONNX model is local deployment data; no project text is sent to its source repository at inference time.
+- UGNAY RQL is untrusted input. Only its documented grammar reaches a typed allow-listed plan; no language token becomes SQL, a permission, or an academic action.
+- Evaluation and warehouse rows are sensitive derived evidence. A frozen copy or aggregate does not relax the source study's visibility, department, or project-membership boundary.
 
 Accounts, Argon2id credentials, roles, invitations, explicit project memberships, and sessions are persisted in MySQL. The browser account panel has authenticated, anonymous, and unavailable states plus a curator access desk for issuing invitations and granting selected-project membership. The raw single-use token must still be delivered out of band and accepted through the public API. Automated delivery, password reset, account disablement, and global role reassignment are not implemented.
 
@@ -23,6 +25,30 @@ Accounts, Argon2id credentials, roles, invitations, explicit project memberships
 - Log decisions, overrides, role changes, exports, restricted-document access, accepted findings, baseline approvals, and completion.
 - Redact secrets, session identifiers, proposal text, and document contents from logs.
 - Rate-limit login, invitation acceptance, uploads, discovery runs, and expensive analysis actions.
+- Require an authenticated server session for catalogue search, RQL, evaluation, and warehouse endpoints. All their POST operations remain CSRF-protected; none uses a browser token or bypass header.
+- Restrict evaluation authoring to curators, independent judgments to advisers/coordinators, qrel adjudication/freeze to coordinators, and run start/read to adviser/coordinator/curator roles. Students cannot mutate experimental evidence.
+- Restrict warehouse refresh and raw load/quality inspection to curators. Non-curator analytics include globally visible `PUBLIC`/`CAMPUS` rows plus same-department non-restricted rows; successor-project continuation facts additionally require explicit membership.
+- Apply the same authorization projection and spreadsheet-formula escaping to CSV exports as to JSON. An export is not a privileged back door.
+
+## Research-query safety
+
+The RQL API accepts one `FIND` statement only. The lexer rejects SQL-only keywords, semicolons, comments, wildcards, unsupported characters, and unknown fields. Strings support only quote and backslash escapes. Source is capped at 4,096 characters, token count at 256, AST depth at 16, result limit at 100, candidates at 10,000, repository queries at four seconds, and total execution at five seconds.
+
+The parser creates a sealed source-spanned AST. Semantic validation checks field types, comparator compatibility, numeric ranges, curated taxonomy, target/context rules, and proposal/thesis authorization. The interpreter maps enums to fixed prepared statements and binds every external value; it cannot carry SQL identifiers, operators, fragments, comments, or session authority.
+
+RQL removes restricted/embargoed records from an unauthorized viewer's candidate set before ranking, preventing protected code/title/text/terms/explanations and result counts from leaking. Proposal context requires same-department authority and, after project creation, explicit membership. Missing, ambiguous, and unauthorized contexts intentionally share a non-disclosing `SEM_*_CONTEXT_UNAVAILABLE` diagnostic.
+
+The audit event stores authenticated actor, query SHA-256, action, algorithm/snapshot/status, counts, latency, and diagnostic codes. It does not store the raw RQL source or protected result text.
+
+## Evaluation and warehouse integrity
+
+- Evaluation corpus items and structured queries are copied and hashed before comparison. Reviewer judgments and qrels are append-only revisions; freeze requires two distinct current reviewers and coordinator adjudication, then prevents later mutation.
+- A run records dataset/corpus/query/qrel/configuration/build/environment identities. The durable MySQL row, not the browser poll or in-memory queue, is authoritative and interrupted work is requeued after restart.
+- Advisers/coordinators receive aggregate and per-query evaluation metrics but not ranked study IDs; curators can inspect ranked hits. CSV exports aggregate metrics only.
+- Missing semantic/model/resource evidence remains `UNAVAILABLE` or `PARTIAL`. It is never changed to zero or presented as a comparable completed run.
+- The warehouse copies source rows into load-scoped staging, records quality issues, and publishes only after all six stages complete. A failure retains its ledger and never switches the latest published pointer.
+- Invalid/missing year and taxonomy evidence remains null/unavailable. Analytics count only actual authorized snapshot rows and never forecast, infer research areas, or manufacture continuation relationships.
+- `UNASSESSED` no-snapshot responses intentionally use empty arrays and zero row counts accompanied by a null snapshot/as-of; those zeros describe the absence of an assessment, not an observed institutional result.
 
 ## Upload path
 
@@ -129,3 +155,5 @@ If document malware or unauthorized disclosure is suspected:
 - Caddy supplies transport security, not institutional identity or policy approval.
 - The model is a retrieval aid, not a plagiarism detector or academic authority.
 - Semantic performance on English/Filipino proposals remains unvalidated until the pilot benchmark is completed.
+- No licensed institutional corpus or adjudicated qrel set is distributed. Retrieval targets and real thesis metrics remain `UNASSESSED` until an authorized institution completes the frozen evaluation protocol.
+- Evaluation and warehouse data share the authoritative MySQL service; they are durable but do not provide an independent disaster-recovery copy.

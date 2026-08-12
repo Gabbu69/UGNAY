@@ -35,6 +35,9 @@ Identity is JDBC-backed. The first application start creates the configured boot
 | Catalogue and ingestion | studies, authors, files, extraction, publication | identity, audit |
 | Intake and review | problem cases, evidence, proposals, objectives | catalogue, identity |
 | Discovery | frozen runs, candidates, field evidence, algorithm versions | catalogue, intake |
+| Research query | RQL lexer/parser/AST, semantic validation, typed plans, safe interpretation | catalogue, warehouse, discovery scoring, identity, audit |
+| Evaluation | frozen corpora/queries/qrels, four-arm jobs, metrics, environment and resource evidence | catalogue, discovery model provider, identity, audit |
+| Warehouse | six-stage load/quality ledger, immutable data mart, authorized analytics and continuation history | catalogue, discovery, continuity, identity, audit |
 | Decisions | adviser recommendations and coordinator dispositions | discovery, intake, audit |
 | Traceability | projects, revisions, baselines, typed links | decisions, identity |
 | Verification | test cases, executions, evidence currency, coverage | traceability |
@@ -43,6 +46,25 @@ Identity is JDBC-backed. The first application start creates the configured boot
 | Analytics and audit | append-only events, health snapshots, review queues | module events only |
 
 Repositories remain package-private to their owning module. Cross-module operations use application services or transactional domain events. A module boundary test must fail if, for example, discovery reaches directly into a traceability repository.
+
+The integrated research path is deliberately one-way with respect to academic authority:
+
+```mermaid
+flowchart LR
+    UI["React Research Laboratory"] --> RQL["Lexer -> Parser -> AST -> Typed plan"]
+    RQL --> DW[("Latest published warehouse snapshot")]
+    DW --> RET["Lexical / TF-IDF / Semantic / Hybrid"]
+    RET --> VIEW["Explained authorized results"]
+    CAT["Catalogue and completion evidence"] --> PIPE["Collect -> Validate -> Clean -> Transform -> Store -> Analyze"]
+    PIPE --> DW
+    DATA["Frozen corpus + queries + adjudicated qrels"] --> EVAL["Durable four-arm evaluation"]
+    RET -. versioned strategies .-> EVAL
+    EVAL --> REPORT["Metrics + latency + resources + manifest"]
+    VIEW --> HUMAN["Adviser / coordinator judgment"]
+    REPORT --> HUMAN
+```
+
+Neither the interpreter nor evaluation module calls a decision write service. Recommendations and reports remain evidence inputs to people.
 
 ## Primary request flows
 
@@ -78,6 +100,24 @@ Repositories remain package-private to their owning module. Cross-module operati
 
 The `/continuity` Continuity Package Studio lets a student, adviser, or coordinator record repository URL and revision, setup instructions, code/data rights, structured limitations, recommendations, unfinished work, and weighted readiness evidence. The server recomputes readiness and project health rather than accepting a patched status. Only a coordinator may invoke completion. Completion evaluates Must-requirement verification, priority-weighted coverage, objective/output links, critical findings, accepted-exception validity, repository/setup evidence, rights, and structured unfinished work. Success atomically creates one catalogue study linked to the source project. A successor may claim a continuation item, but never rewrites predecessor history.
 
+### Warehouse publication and analysis
+
+1. Catalogue publication or project completion requests a local warehouse refresh after the source transaction commits; a curator can also invoke refresh explicitly.
+2. **Collect** copies a transaction-consistent source cutoff into load-scoped staging and calculates a deterministic source SHA-256.
+3. **Validate** checks identities, references, visibility, duplicate identifiers, strict years, and taxonomy integrity. Invalid or absent years become null plus a quality issue; they are never coerced.
+4. **Clean** applies Unicode/whitespace normalization to derived fields while leaving source evidence unchanged.
+5. **Transform** creates study, metadata-version, objective, topic, retrieval, and continuation dimensions/facts with provenance hashes.
+6. **Store** publishes a new immutable `warehouse_snapshots` version only after all earlier stages succeed. The same source hash returns `UNCHANGED`; a failed load never replaces the latest successful snapshot.
+7. **Analyze** returns visibility/department-authorized counts and trends, with snapshot/as-of and quality status. Repeated topics require the same active keyword/topic in at least two distinct studies; common research areas use explicit active `RESEARCH_AREA` terms only. No forecasts or invented classifications are produced.
+
+### Research-query interpretation
+
+`POST /research-queries/execute` runs a hand-written tokenizer, recursive-descent parser, sealed source-spanned AST, semantic validator, and typed-plan interpreter. The plan contains enums and values rather than SQL. Fixed prepared statements, a 10,000-candidate ceiling, maximum result limit 100, and a five-second deadline bound execution. The interpreter prefers the latest published warehouse snapshot and reports an explicit live-catalogue fallback when no snapshot exists. See [UGNAY RQL](research-query-language.md).
+
+### Retrieval evaluation
+
+A curator freezes an exact corpus copy and structured query set. Two distinct advisers/coordinators independently grade query-study relevance from 0-3; a coordinator adjudicates and freezes qrels. A durable job then executes lexical, TF-IDF, local semantic E5, and hybrid arms against the identical dataset manifest. Per-query and macro aggregate Precision, Recall, F1, MRR, and graded NDCG are persisted at K 1/3/5/10 with latency, resource, configuration, model/provider, build, database, JVM, OS, and hash evidence. Missing semantic capability becomes `UNAVAILABLE`/`PARTIAL`, never a fabricated zero-valued complete result. See [integrated research framework](research-framework.md).
+
 ## Explainability contracts
 
 - A similarity result stores overall and field scores, confidence, comparable fields, matched passages, input hash, model hash, weights, thresholds, and status.
@@ -95,6 +135,8 @@ The `/continuity` Continuity Package Studio lets a student, adviser, or coordina
 - Mutable aggregate roots use optimistic `row_version` and HTTP ETags.
 - All stored instants are UTC `DATETIME(6)`.
 - Approved baselines, decisions, algorithm configurations, and audit records are append-only.
+- Study metadata history, evaluation judgments/qrels/results, warehouse loads, and published warehouse snapshots are append-only. Derived search profiles and embeddings remain rebuildable.
+- Operational MySQL rows remain authoritative. Warehouse snapshots are immutable analytical copies; evaluation corpus versions are immutable experimental copies. Neither can silently write facts back to the operational catalogue.
 - Composite project keys prevent a link from crossing project boundaries.
 - JSON is reserved for frozen configuration/evidence snapshots where queryable relational columns would not improve integrity.
 - Document objects are immutable per version and addressed by randomized keys. Lite uses an atomic user-only filesystem adapter; Compose uses a bucket-scoped MinIO adapter without delete authority. SHA-256 detects accidental substitution.
@@ -107,6 +149,9 @@ The `/continuity` Continuity Package Studio lets a student, adviser, or coordina
 - `GET /projects/{id}` returns the canonical project `ETag`. The protected actions below require that exact value in `If-Match`; wildcard values are rejected. Missing and stale preconditions return RFC 9457 responses with status `428` and `412`, respectively. Project-authoring, baseline, continuity-evidence, and completion responses echo the current project ETag; analysis/impact clients reload the project before a later mutation. A change-request creation response carries the change request's own ETag, not a replacement project ETag.
 - State transitions use actions (`approve`, `return-for-revision`, `preview-impact`, `complete`) instead of arbitrary status patches.
 - Extraction progress may use server-sent events, while the MySQL job row and status endpoint remain the durable source of truth.
+- Evaluation comparison returns `202 Accepted`; the MySQL run row is the durable source and interrupted work is requeued after restart.
+- RQL language errors are successful API exchanges containing `valid=false`, a stage, source span, stable diagnostic code, and no results. They are not database errors and never expose SQL.
+- Warehouse and evaluation CSV exports apply the same authorization/report boundary as their JSON source. Missing measurements serialize as `UNAVAILABLE`, not zero.
 
 ### ETag-protected mutation and role matrix
 

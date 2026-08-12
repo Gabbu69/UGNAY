@@ -2,6 +2,7 @@ package com.ugnay.platform.workspace;
 
 import com.ugnay.platform.identity.JdbcIdentityService;
 import com.ugnay.platform.identity.ProjectAccessService;
+import com.ugnay.platform.identity.StudyVisibilityPolicy;
 import com.ugnay.platform.shared.JdbcAuditService;
 import com.ugnay.platform.shared.PlatformModels.ChangeRequest;
 import com.ugnay.platform.shared.PlatformModels.DecisionDisposition;
@@ -20,6 +21,7 @@ import com.ugnay.platform.shared.PlatformModels.Project;
 import com.ugnay.platform.shared.PlatformModels.Proposal;
 import com.ugnay.platform.shared.PlatformModels.ProposalDecision;
 import com.ugnay.platform.shared.PlatformModels.Study;
+import com.ugnay.platform.warehouse.WarehouseRefreshRequested;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
@@ -54,6 +56,7 @@ import java.security.Principal;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.context.ApplicationEventPublisher;
 
 @RestController
 @RequestMapping("/api/v1")
@@ -63,19 +66,24 @@ public class UgnayApiController {
     private final JdbcIdentityService identities;
     private final JdbcAuditService audit;
     private final ProjectAccessService projectAccess;
+    private final StudyVisibilityPolicy studyVisibility;
     private final WorkflowActionService actions;
     private final CatalogueMetadataRepository catalogueMetadata;
+    private final ApplicationEventPublisher events;
 
     public UgnayApiController(WorkspaceService workspace, UiWorkspaceMapper ui,
                               JdbcIdentityService identities, JdbcAuditService audit,
-                              ProjectAccessService projectAccess, WorkflowActionService actions) {
+                              ProjectAccessService projectAccess, WorkflowActionService actions,
+                              ApplicationEventPublisher events, StudyVisibilityPolicy studyVisibility) {
         this.workspace = workspace;
         this.ui = ui;
         this.identities = identities;
         this.audit = audit;
         this.projectAccess = projectAccess;
+        this.studyVisibility = studyVisibility;
         this.actions = actions;
         this.catalogueMetadata = ui.catalogueMetadata();
+        this.events = events;
     }
 
     @GetMapping("/workspace")
@@ -92,32 +100,39 @@ public class UgnayApiController {
     }
 
     @GetMapping("/studies")
-    public List<UiContracts.StudyView> studies(@RequestParam(required = false) String q) {
-        if (q == null || q.isBlank()) return ui.studies();
+    @PreAuthorize("isAuthenticated()")
+    public List<UiContracts.StudyView> studies(Authentication authentication,
+            @RequestParam(required = false) String q) {
+        List<UiContracts.StudyView> permitted = ui.studies(authentication);
+        if (q == null || q.isBlank()) return permitted;
         String query = q.toLowerCase();
-        return ui.studies().stream().filter(study -> (study.title() + " " + study.abstractText() + " " + String.join(" ", study.keywords()))
+        return permitted.stream().filter(study -> (study.title() + " " + study.abstractText() + " " + String.join(" ", study.keywords()))
                 .toLowerCase().contains(query)).toList();
     }
 
     @GetMapping("/studies/{id}")
+    @PreAuthorize("isAuthenticated()")
     public Study study(@PathVariable UUID id, Authentication authentication) {
         Study study = workspace.study(id);
-        if (isCurator(authentication) || !restricted(study)) return study;
-        return redactedStudy(study);
-    }
-
-    private static Study redactedStudy(Study study) {
-        return new Study(study.id(), study.institutionalCode(), study.title(), study.academicYear(), study.department(),
-                study.lifecycleStatus(), study.visibility(), "Restricted catalogue record.", "Protected", List.of(), study.keywords(),
-                "Protected", "Protected", "Protected", "Protected", "Protected", "Protected", "Protected", List.of());
+        studyVisibility.requireVisible(authentication, study.visibility(), study.department());
+        return study;
     }
 
     @PostMapping("/imports/studies")
     @ResponseStatus(HttpStatus.CREATED)
-    public Study importStudy(@Valid @RequestBody StudyImportRequest request) {
-        return workspace.importStudy(request.institutionalCode(), request.title(), request.academicYear(), request.abstractText(),
+    @Transactional
+    public Study importStudy(@Valid @RequestBody StudyImportRequest request, Principal principal) {
+        Study study = workspace.importStudy(request.institutionalCode(), request.title(), request.academicYear(), request.abstractText(),
                 request.problemStatement(), request.objectives(), request.keywords(), request.methodology(), request.features(),
-                request.stakeholders(), request.siteContext());
+                request.stakeholders(), request.siteContext(), request.department(), request.dataSources(), request.technology(),
+                request.intendedUsers(), request.visibility(), request.lifecycleStatus(), principal.getName());
+        catalogueMetadata.updatePublication(study.id(), request.program(), request.authors(), request.doi(), request.repositoryIdentifier());
+        catalogueMetadata.recordReviewedEvidence(study.id(), new CatalogueMetadataRepository.ReviewedEvidence(
+                request.academicYear(), request.department(), request.resultsText(), request.dataSources(), request.technology(),
+                request.intendedUsers(), request.researchAreas(), request.visibility(), request.lifecycleStatus()),
+                principal.getName(), "CURATOR_REVIEW");
+        events.publishEvent(new WarehouseRefreshRequested(principal.getName(), WarehouseRefreshRequested.Trigger.CATALOGUE_PUBLICATION));
+        return study;
     }
 
     @PostMapping("/imports/documents/jobs/{jobId}/publish-study")
@@ -128,9 +143,16 @@ public class UgnayApiController {
         UUID documentVersionId = catalogueMetadata.requirePublicationEligibleVersion(jobId);
         Study study = workspace.importStudy(request.institutionalCode(), request.title(), request.academicYear(),
                 request.abstractText(), request.problemStatement(), request.objectives(), request.keywords(),
-                request.methodology(), request.features(), request.stakeholders(), request.siteContext());
+                request.methodology(), request.features(), request.stakeholders(), request.siteContext(), request.department(),
+                request.dataSources(), request.technology(), request.intendedUsers(), request.visibility(),
+                request.lifecycleStatus(), principal.getName());
         catalogueMetadata.updatePublication(study.id(), request.program(), request.authors(), request.doi(), request.repositoryIdentifier());
+        catalogueMetadata.recordReviewedEvidence(study.id(), new CatalogueMetadataRepository.ReviewedEvidence(
+                request.academicYear(), request.department(), request.resultsText(), request.dataSources(), request.technology(),
+                request.intendedUsers(), request.researchAreas(), request.visibility(), request.lifecycleStatus()),
+                principal.getName(), "DOCUMENT_PUBLICATION");
         catalogueMetadata.linkPublication(study.id(), documentVersionId, principal.getName());
+        events.publishEvent(new WarehouseRefreshRequested(principal.getName(), WarehouseRefreshRequested.Trigger.CATALOGUE_PUBLICATION));
         audit.append(principal.getName(), "STUDY_PUBLISHED_FROM_DOCUMENT", "STUDY", study.id(),
                 "Published curator-reviewed metadata and linked its immutable source document version.",
                 Map.of("documentVersionId", documentVersionId.toString(), "extractionJobId", jobId.toString()));
@@ -226,6 +248,16 @@ public class UgnayApiController {
 
     @GetMapping("/proposals/{id}/adviser-recommendations")
     public Object adviserRecommendations(@PathVariable UUID id) { workspace.proposal(id); return actions.adviserRecommendations(id); }
+
+    @GetMapping("/proposals/{id}/route-evidence/{predecessorId}")
+    @PreAuthorize("isAuthenticated()")
+    public Object routeEvidence(@PathVariable UUID id, @PathVariable UUID predecessorId,
+            Authentication authentication) {
+        projectAccess.requireProposalAccess(authentication, id);
+        Study predecessor = workspace.study(predecessorId);
+        studyVisibility.requireVisible(authentication, predecessor.visibility(), predecessor.department());
+        return workspace.routeAssessment(id, predecessorId);
+    }
 
     @PostMapping("/proposals/{id}/adviser-recommendations")
     @PreAuthorize("hasRole('ADVISER')")
@@ -392,6 +424,7 @@ public class UgnayApiController {
     }
 
     @PostMapping("/projects/{id}/complete")
+    @Transactional
     public ResponseEntity<Object> complete(@PathVariable UUID id,
             @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch, Authentication principal) {
         projectAccess.requireAccess(principal, id);
@@ -399,7 +432,12 @@ public class UgnayApiController {
         Set<UUID> nonBlocking = workspace.traceability(id).findings().stream()
                 .filter(finding -> Set.of(FindingState.RESOLVED, FindingState.ACCEPTED).contains(actions.effectiveFindingState(id, finding)))
                 .map(com.ugnay.platform.shared.PlatformModels.Finding::id).collect(java.util.stream.Collectors.toSet());
-        Object assessment = workspace.completionAssessment(id, principal.getName(), nonBlocking);
+        Map<String, Object> assessment = workspace.completionAssessment(id, principal.getName(), nonBlocking);
+        if (assessment.containsKey("catalogueStudy")) {
+            Study completedStudy = (Study) assessment.get("catalogueStudy");
+            catalogueMetadata.recordCurrentSnapshot(completedStudy.id(), principal.getName(), "PROJECT_COMPLETION");
+            events.publishEvent(new WarehouseRefreshRequested(principal.getName(), WarehouseRefreshRequested.Trigger.PROJECT_COMPLETION));
+        }
         return ResponseEntity.ok().eTag(etag(workspace.project(id).rowVersion())).body(assessment);
     }
 
@@ -585,17 +623,22 @@ public class UgnayApiController {
     }
 
     public record StudyImportRequest(
-            @NotBlank String institutionalCode, @NotBlank String title, @NotBlank String academicYear,
+            @NotBlank String institutionalCode, @NotBlank String title, String academicYear,
             @NotBlank String abstractText, @NotBlank String problemStatement, @NotEmpty List<@NotBlank String> objectives,
             @NotEmpty List<@NotBlank String> keywords, @NotBlank String methodology, @NotBlank String features,
-            @NotBlank String stakeholders, @NotBlank String siteContext) {}
+            @NotBlank String stakeholders, @NotBlank String siteContext,
+            String department, String program, List<@NotBlank String> authors, String doi, String repositoryIdentifier,
+            String dataSources, String technology, String intendedUsers, String resultsText,
+            List<@NotBlank String> researchAreas, String visibility, String lifecycleStatus) {}
     public record PublishStudyRequest(
-            @NotBlank String institutionalCode, @NotBlank String title, @NotBlank String academicYear,
+            @NotBlank String institutionalCode, @NotBlank String title, String academicYear,
             @NotBlank String program, @NotEmpty List<@NotBlank String> authors, String doi, String repositoryIdentifier,
             @NotBlank String abstractText, @NotBlank String problemStatement,
             @NotEmpty List<@NotBlank String> objectives, @NotEmpty List<@NotBlank String> keywords,
             @NotBlank String methodology, @NotBlank String features, @NotBlank String stakeholders,
-            @NotBlank String siteContext) {}
+            @NotBlank String siteContext, String department, String dataSources, String technology,
+            String intendedUsers, String resultsText, List<@NotBlank String> researchAreas,
+            String visibility, String lifecycleStatus) {}
 
     public record ProblemRequest(
             @NotBlank String title, @NotBlank @Size(min = 40) String problemStatement, @NotBlank String stakeholder,

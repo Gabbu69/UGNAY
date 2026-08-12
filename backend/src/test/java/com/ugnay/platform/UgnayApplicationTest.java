@@ -112,13 +112,9 @@ class UgnayApplicationTest {
     }
 
     @Test
-    void restrictedStudyDetailIsRedactedForAnonymousCatalogueReaders() throws Exception {
+    void restrictedStudyDetailIsDeniedForAnonymousCatalogueReaders() throws Exception {
         String restrictedId = com.ugnay.platform.workspace.WorkspaceService.id("study-hospital").toString();
-        mvc.perform(get("/api/v1/studies/" + restrictedId)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.visibility").value("RESTRICTED"))
-                .andExpect(jsonPath("$.abstractText").value("Restricted catalogue record."))
-                .andExpect(jsonPath("$.problemStatement").value("Protected"))
-                .andExpect(jsonPath("$.continuationItems").isEmpty());
+        mvc.perform(get("/api/v1/studies/" + restrictedId)).andExpect(status().isForbidden());
     }
 
     @Test

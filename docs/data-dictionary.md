@@ -33,7 +33,8 @@ The runtime identity provider persists the bootstrap administrator, active crede
 
 | Table | Important columns | Integrity and purpose |
 |---|---|---|
-| `studies` | `department_id`, `institutional_code`, `title`, `abstract_text`, `status`, `completion_year`, `methodology`, `system_type`, `intended_users`, `site_context`, `source_project_id`, `visibility`, `row_version` | Unique institutional code; at most one study per completed source project |
+| `studies` | `department_id`, `institutional_code`, `title`, `abstract_text`, `academic_year`, validated `completion_year`, `results_text`, `methodology`, `system_type`, `intended_users`, `site_context`, `source_project_id`, `visibility`, `row_version` | Unique institutional code; at most one study per completed source project; raw academic year is retained when numeric year is unavailable |
+| `study_metadata_versions` | `study_id`, `version_number`, `provenance_type`, `source_sha256`, `metadata_json`, `recorded_by`, `recorded_at` | Immutable exact metadata history; legacy rows are snapshotted without inventing absent fields |
 | `authors` | `display_name`, `normalized_name`, `orcid` | Reusable author identity without requiring a platform account |
 | `study_authors` | `study_id`, `author_id`, `author_order`, `author_role` | Composite primary key; unique order within a study |
 | `study_objectives` | `study_id`, `sequence_no`, `objective_text`, `normalized_text` | Ordered, independently comparable objectives |
@@ -51,12 +52,14 @@ The runtime identity provider persists the bootstrap administrator, active crede
 
 | Table | Important columns | Integrity and purpose |
 |---|---|---|
-| `study_search_profiles` | `study_id`, normalized title/problem/objectives/features/methodology/context fields, `combined_text`, `profile_hash`, `status` | One active profile per published study; full-text indexes cover normalized text |
-| `search_term_statistics` | `algorithm_configuration_id`, `term`, `document_frequency`, `inverse_document_frequency` | Reproducible TF-IDF corpus snapshot |
+| `study_search_profiles` | `study_id`, `metadata_version_id`, `normalizer_version`, title/problem/objectives/methodology/keyword text, `combined_text`, `profile_sha256`, `profile_status` | Versioned, rebuildable search profile tied to exact metadata when available |
+| `retrieval_corpus_snapshots` | `snapshot_name`, `source_cutoff`, `corpus_sha256`, `study_count`, `snapshot_status`, `created_by`, `created_at` | Named immutable retrieval-corpus identity |
+| `retrieval_corpus_items` | `corpus_snapshot_id`, `study_id`, `profile_id`, `item_order` | Exact ordered study/profile membership of one corpus snapshot |
+| `search_term_statistics` | `corpus_snapshot_id`, `term_text`, `document_frequency`, `inverse_document_frequency` | Reproducible TF-IDF statistics for one corpus snapshot |
 | `model_versions` | `name`, `revision`, `sha256`, `dimension`, `status`, `loaded_at` | Records the locally verified model asset; never contains model bytes |
 | `study_embeddings` | `study_id`, `model_version_id`, `profile_hash`, `dimension`, `vector_bytes` | Rebuildable float vector; unique by study/model/profile |
 | `segment_embeddings` | `segment_id`, `model_version_id`, `text_hash`, `dimension`, `vector_bytes` | Optional passage-level derived data |
-| `algorithm_configurations` | `version_name`, `model_version_id`, `weights_json`, `thresholds_json`, `concept_map_hash`, `stopword_hash`, `active_from` | Immutable, checksummed scoring contract |
+| `algorithm_configurations` | `version_name`, `algorithm_code`, `model_version_id`, `weights_json`, `thresholds_json`, `concept_map_hash`, `stopword_hash`, `reproducibility_status`, `active_from` | Immutable scoring contract; inherited incomplete records remain explicitly `LEGACY_PARTIAL` |
 
 ## Intake, discovery, and academic decisions
 
@@ -66,7 +69,7 @@ The runtime identity provider persists the bootstrap administrator, active crede
 | `problem_evidence` | `problem_case_id`, `evidence_type`, `statement`, `document_id`, `source_date` | A problem needs reviewable evidence before routing |
 | `proposals` | `problem_case_id`, `working_title`, `solution_summary`, `features_text`, `methodology`, `data_sources`, `system_type`, `intended_users`, `status`, `row_version` | One or more revisions may address a problem case |
 | `proposal_objectives` | `proposal_id`, `sequence_no`, `objective_text`, `novelty_claim`, `measurement_baseline`, `measurement_target`, `evaluation_method` | Ordered inputs for one-to-one objective comparison |
-| `discovery_runs` | `proposal_id`, `input_hash`, `algorithm_configuration_id`, `model_hash`, `assessment_status`, `recommendation`, `confidence`, `started_at`, `completed_at` | Frozen run; `PARTIAL` is retained rather than overwritten |
+| `discovery_runs` | `proposal_id`, `input_hash`, `algorithm_configuration_id`, `model_hash`, `corpus_snapshot_id`, `environment_snapshot_json`, `code_version`, `assessment_status`, `recommendation`, `confidence`, `started_at`, `completed_at` | Frozen run; `PARTIAL` and legacy partial-reproducibility evidence are retained rather than overwritten |
 | `discovery_candidates` | `discovery_run_id`, `study_id`, `rank_no`, `problem_score`, `solution_score`, `objective_score`, `confidence`, `similarity_band`, `duplicate_flag`, `exact_match_type` | Unique study per run and rank; top explained candidates |
 | `candidate_evidence` | `candidate_id`, `field_name`, `component_type`, `component_score`, `proposal_excerpt`, `study_segment_id`, `redaction_status` | Score decomposition and safe matched passage |
 | `proposal_decisions` | `proposal_id`, `discovery_run_id`, `decision_type`, `disposition`, `rationale`, `decided_by`, `decided_at`, `supersedes_id` | Adviser recommendation and coordinator disposition are separate immutable rows |
@@ -132,3 +135,42 @@ The executable V3 migration adds relational child tables needed to reconstruct t
 ## Durable extraction support (Flyway V4)
 
 V4 adds `document_versions.storage_etag` and the queue, progress, limits, retry, manual-review, and publication-eligibility columns on `extraction_runs`, plus `(run_status, queued_at)` for bounded backlog pickup. The extraction row—not an in-memory task or SSE connection—is the recovery authority. A `RUNNING` job is returned to `QUEUED` after application restart; a `VALIDATING` job whose storage confirmation is uncertain becomes `ORPHAN_REVIEW` and cannot be published automatically.
+
+## Catalogue and retrieval foundation (Flyway V6)
+
+V6 appends `studies.results_text` and validated numeric `studies.completion_year`; neither column is populated with guessed data. It adds immutable `study_metadata_versions`, derived `study_search_profiles`, `retrieval_corpus_snapshots`, ordered `retrieval_corpus_items`, and `search_term_statistics`. Algorithm configurations gain an explicit algorithm code and reproducibility status; discovery runs can reference a corpus snapshot, environment snapshot, and code version. Existing evidence is preserved and incomplete inherited configuration remains `LEGACY_PARTIAL` rather than being rewritten as reproducible.
+
+## Retrieval evaluation framework (Flyway V7)
+
+| Table | Important columns | Integrity and purpose |
+|---|---|---|
+| `evaluation_datasets` | `name`, `description`, `created_by`, `created_at` | Logical curator-authored experiment dataset |
+| `evaluation_dataset_versions` | `dataset_id`, `version_number`, `dataset_status`, corpus/dataset SHA-256, `manifest_json`, creator/freezer and times | `DRAFT` authoring boundary and immutable `FROZEN` manifest |
+| `evaluation_corpus_items` | `dataset_version_id`, `study_id`, `item_order`, `study_profile_sha256`, `profile_text`, `study_snapshot_json` | Exact copied corpus used identically by every arm |
+| `evaluation_queries` | `dataset_version_id`, `external_key`, `query_split`, title/text/snapshot, `query_sha256`, creator/time | Structured `DEV`/`TEST` input, not an ad-hoc live query |
+| `evaluation_judgments` | query/study/reviewer, `revision_number`, `relevance_grade`, `rationale`, `supersedes_judgment_id`, `judged_at` | Append-only 0-3 independent reviewer evidence |
+| `evaluation_qrels` | query/study, revision, grade/rationale, adjudicator, superseded qrel, time | Append-only coordinator-adjudicated ground truth; never algorithm output |
+| `evaluation_runs` | dataset version, run/comparability status, primary K/cutoffs, repetitions/seed, build, environment/run manifests and hashes, lifecycle times | Durable asynchronous four-arm comparison authority |
+| `evaluation_algorithm_runs` | run, algorithm/version/attempt/status, configuration JSON/SHA-256, availability reason, index time, p50/p95 | One versioned strategy attempt and its completeness/performance state |
+| `evaluation_ranked_hits` | algorithm run, query, study, rank, score | Deterministic top-ten experimental ranking |
+| `evaluation_query_metrics` | algorithm run, query, K, metric status, P/R/F1/MRR/NDCG, relevant/judged counts | Exact per-query IR evidence; nullable values represent unavailable measurement |
+| `evaluation_aggregate_metrics` | algorithm run, K, metric status, P/R/F1/MRR/NDCG, eligible/excluded counts | Macro average over eligible queries with explicit exclusions |
+| `evaluation_resource_snapshots` | algorithm run, phase/order, wall time, process CPU, heap used/committed, capture time | Before/index/query/after resource samples; unsupported measurements remain null |
+
+Dataset freeze is rejected until each query has a positive adjudicated qrel and every adjudicated pair retains two distinct current reviewers. The database preserves revisions and job evidence across restart. Evaluation tables do not reference or update proposal decisions.
+
+## Historical research warehouse (Flyway V8)
+
+The warehouse uses the same MySQL instance. Operational tables remain authoritative; `warehouse_*` rows record load work and `dw_*` rows are immutable analytical copies.
+
+| Group | Tables | Purpose |
+|---|---|---|
+| Load ledger | `warehouse_loads`, `warehouse_load_stages`, `warehouse_quality_issues` | Durable request, six ordered stage states, counts, source hash/cutoff, failure, publication link, and field-level quality evidence |
+| Staging | `warehouse_staged_studies`, `warehouse_staged_objectives`, `warehouse_staged_metadata_versions`, `warehouse_staged_topics`, `warehouse_staged_retrievals`, `warehouse_staged_continuity` | Load-scoped exact source copies and derived normalized/validated values; never an application source of truth |
+| Snapshot | `warehouse_snapshots` | Immutable version, source SHA-256/cutoff/counts, and `BUILDING`/`PUBLISHED` boundary; only complete loads publish |
+| Dimensions | `dw_department_dimensions`, `dw_year_dimensions`, `dw_topic_dimensions`, `dw_study_dimensions`, `dw_study_version_dimensions` | Snapshot-scoped department, validated year, explicit taxonomy, complete study, and metadata-history attributes |
+| Bridge/facts | `dw_study_topic_bridge`, `dw_study_objective_facts`, `dw_study_facts`, `dw_retrieval_facts`, `dw_continuation_facts` | Many-to-many topics plus objective, study-count, historical retrieval, and continuation evidence |
+
+The ordered stage codes are `COLLECT`, `VALIDATE`, `CLEAN`, `TRANSFORM`, `STORE`, and `ANALYZE`. Strict year derivation accepts a four-digit year or consecutive `YYYY-YYYY` within 1900-2200; invalid or absent values remain null and create a quality issue. Source text is not replaced by cleaned text. The same source SHA-256 produces an `UNCHANGED` load, and a failed load retains the previous published snapshot.
+
+Warehouse analytics count distinct authorized studies. Repeated topics require an active topic/keyword on at least two studies; common research areas require an explicit active `RESEARCH_AREA`; trends are observed topic-by-year counts with no forecasting. Continuation facts retain their source kind, predecessor/successor/claim references, status, rationale, and evidence time without manufacturing a relationship when evidence is absent.

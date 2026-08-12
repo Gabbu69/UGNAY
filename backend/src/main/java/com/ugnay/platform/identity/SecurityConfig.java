@@ -56,6 +56,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(authorize -> {
                     authorize.requestMatchers("/", "/index.html", "/favicon.ico", "/assets/**",
                             "/atlas", "/intake", "/decision", "/alignment", "/changes", "/continuity", "/reviews",
+                            "/research-lab/query", "/research-lab/evaluation", "/research-lab/warehouse",
                             "/projects/*/alignment", "/projects/*/changes", "/projects/*/continuity", "/projects/*/reviews",
                             "/actuator/health", "/actuator/health/**", "/error", "/openapi.yaml", "/api/v1/auth/**",
                             "/api/v1/system/shutdown").permitAll();
