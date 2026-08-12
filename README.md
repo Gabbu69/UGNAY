@@ -8,6 +8,17 @@ UGNAY connects real campus/community problems to earlier student research and pr
 
 It is a Java/MySQL web application, not a generic CRUD repository or project-management board. UGNAY recommends and explains; authorized advisers and coordinators make academic decisions.
 
+UGNAY also serves as an undergraduate experimental platform for three connected Computer Science areas:
+
+| Area | Implemented contribution |
+|---|---|
+| Web Development | The same-origin Spring Boot/React platform, role-scoped workflows, server-side catalogue search, responsive Research Laboratory, traceability, reports, and offline Windows Lite operation |
+| Data Mining | Separately versioned lexical, TF-IDF cosine, local semantic E5, and hybrid retrieval arms evaluated against the same frozen corpus, structured queries, and adjudicated relevance judgments |
+| Data Warehousing | A durable `Collect -> Validate -> Clean -> Transform -> Store -> Analyze` pipeline that publishes immutable historical-research snapshots and authorized trend/continuation analytics |
+| Compiler and Interpreter | UGNAY RQL, a deliberately small research query language processed through tokenizer, parser, AST, semantic validation, typed plan, safe interpreter, and explained result |
+
+The application is the experimental environment; the reproducible algorithm comparison, query-language processing pipeline, and evidence-preserving warehouse process are the academic contributions. None of them automatically approves or rejects a thesis, declares plagiarism, certifies duplication, or changes a human `NEW`/`IMPROVE`/`CONTINUE` decision.
+
 ![UGNAY Research Atlas](docs/screenshots/research-atlas.png)
 
 ## Run on a 4 GB Windows laptop
@@ -88,6 +99,10 @@ The Compose/MinIO/ClamAV deployment remains available for a stronger pilot machi
 - Typed Add/Revise/Retire/Relink change operations, impact paths, reject/return/approve decisions, evidence invalidation, and baseline N+1.
 - Evidence-derived continuity readiness, successor claims, append-only outcomes, completion gates, and exactly-one source-linked catalogue publication.
 - Same-origin session authentication, CSRF, concrete ETags/`If-Match`, RFC 9457 errors, and append-only audit events.
+- Paginated server-side catalogue search whose rows never inherit unrelated client-side similarity scores.
+- A bounded UGNAY RQL interpreter with optional token/AST/validation/action trace and authorization-aware result redaction.
+- Durable evaluation datasets, independent 0-3 relevance judgments, coordinator-adjudicated qrels, asynchronous four-arm comparison, IR metrics, environment/resource evidence, and CSV reports.
+- Immutable research-warehouse loads, strict year-quality handling, authorized historical analytics, continuation history, and CSV exports.
 
 Missing information is displayed as `UNASSESSED`, `PARTIAL`, empty, or unavailable. Live API responses are never merged with frontend demo fixtures.
 
@@ -96,6 +111,7 @@ Missing information is displayed as `UNASSESSED`, `PARTIAL`, empty, or unavailab
 UGNAY uses a connected-research-studio visual language: midnight shell, warm paper surfaces, editorial typography, teal/violet evidence paths, restrained motion, and table/matrix alternatives for graphs.
 
 - **Research Atlas:** catalogue search and explainable research relationships.
+- **Research Laboratory:** query interpreter, algorithm evaluation, and research warehouse in three deep-linkable tabs.
 - **Intake Studio:** problem, context, objectives, evidence, and review.
 - **Decision Room:** frozen discovery evidence and all five human dispositions.
 - **Alignment Workspace:** graph/matrix traceability and evidence authoring.
@@ -159,9 +175,9 @@ Get-ChildItem .\scripts\windows\*.ps1 | ForEach-Object {
 $errors
 ```
 
-Current source verification includes frontend Vitest/lint/build, Flyway on H2 MySQL mode, Spring/Modulith tests, persistence-restart tests, security/ETag workflows, asynchronous ingestion tests, and a real 384-dimensional inference from the release INT8 model. The GitHub workflow repeats frontend/backend/OpenAPI/migration gates and publishes checksums.
+Current source verification includes frontend Vitest/lint/build, Flyway on H2 MySQL mode, Spring/Modulith tests, persistence-restart tests, security/ETag workflows, asynchronous ingestion tests, RQL lexer/parser/safety tests, exact IR metric fixtures, durable evaluation-run recovery, warehouse load/authorization tests, and a real 384-dimensional inference from the release INT8 model. The GitHub workflow repeats frontend/backend/OpenAPI/migration gates and publishes checksums.
 
-Physical 4 GB/Pentium timing, the 10,000-study benchmark, real Windows Defender scanning, and full portable MySQL backup/restore must be rechecked on the actual target laptop before claiming hardware acceptance. See [acceptance and demo](docs/acceptance-and-demo.md).
+No licensed institutional corpus or adjudicated qrel set is bundled. Therefore real thesis retrieval metrics remain `UNASSESSED` until reviewers freeze and run an institutional dataset. Physical 4 GB/Pentium timing, the 10,000-study benchmark, real Windows Defender scanning, and full portable MySQL backup/restore must also be rechecked on the actual target laptop before claiming acceptance. See [research framework](docs/research-framework.md) and [acceptance and demo](docs/acceptance-and-demo.md).
 
 ## Security and limitations
 
@@ -172,7 +188,7 @@ Physical 4 GB/Pentium timing, the 10,000-study benchmark, real Windows Defender 
 - The INT8 model is benchmarked by observed English/Filipino results, not trusted by label alone.
 - Initial setup/update requires internet; ordinary use does not.
 
-More detail: [architecture](docs/architecture.md), [decision rules](docs/decision-rules.md), [data dictionary](docs/data-dictionary.md), [security and operations](docs/security-and-operations.md), and [OpenAPI](backend/src/main/resources/static/openapi.yaml).
+More detail: [architecture](docs/architecture.md), [research framework](docs/research-framework.md), [UGNAY RQL](docs/research-query-language.md), [decision rules](docs/decision-rules.md), [data dictionary](docs/data-dictionary.md), [security and operations](docs/security-and-operations.md), [acceptance and demo](docs/acceptance-and-demo.md), and [OpenAPI](backend/src/main/resources/static/openapi.yaml).
 
 ## Handoff to another AI
 

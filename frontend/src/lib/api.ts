@@ -71,6 +71,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 }
 
+/** Shared same-origin transport for domain-specific clients such as the Research Laboratory. */
+export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  return request<T>(path, init)
+}
+
 const unavailableProject: WorkspaceData['project'] = {
   id: 'unavailable', code: 'UNASSESSED', title: 'No persisted project is available', stage: 'UNASSESSED',
   route: 'REVIEW_REQUIRED', department: 'Unavailable', adviser: 'Unassigned', updatedAt: '', openFindings: 0, health: 0,
@@ -140,6 +145,59 @@ export interface ProjectMembershipRecord {
   displayName: string
   role: string
   joinedAt: string
+}
+
+export interface CatalogueStudySummary {
+  id: string
+  institutionalCode: string
+  title: string
+  academicYear?: string | null
+  completionYear?: number | null
+  departmentCode?: string | null
+  departmentName?: string | null
+  program?: string | null
+  lifecycleStatus: string
+  visibility: string
+  abstractText?: string | null
+  problemStatement?: string | null
+  methodology?: string | null
+  keywords: string[]
+  resultsText?: string | null
+  objectiveCount: number
+}
+
+export interface CatalogueSearchPage {
+  items: CatalogueStudySummary[]
+  totalItems: number
+  page: number
+  pageSize: number
+  generatedAt: string
+}
+
+export interface CatalogueSearchFilters {
+  q?: string
+  department?: string
+  yearFrom?: number
+  yearTo?: number
+  lifecycle?: string
+  topic?: string
+  page?: number
+  size?: number
+  sort?: 'YEAR_DESC' | 'YEAR_ASC' | 'TITLE_ASC' | 'TITLE_DESC'
+}
+
+export async function searchCatalogue(filters: CatalogueSearchFilters): Promise<CatalogueSearchPage> {
+  const params = new URLSearchParams()
+  if (filters.q) params.set('q', filters.q)
+  if (filters.department) params.set('department', filters.department)
+  if (filters.yearFrom != null) params.set('yearFrom', String(filters.yearFrom))
+  if (filters.yearTo != null) params.set('yearTo', String(filters.yearTo))
+  if (filters.lifecycle) params.set('lifecycle', filters.lifecycle)
+  if (filters.topic) params.set('topic', filters.topic)
+  params.set('page', String(filters.page ?? 0))
+  params.set('size', String(filters.size ?? 20))
+  params.set('sort', filters.sort ?? 'YEAR_DESC')
+  return request<CatalogueSearchPage>(`/catalogue/search?${params.toString()}`)
 }
 
 export interface LoginInput {
@@ -272,6 +330,18 @@ export interface StudyMetadataInput {
   features: string
   stakeholders: string
   siteContext: string
+  department?: string
+  program?: string
+  authors?: string[]
+  doi?: string
+  repositoryIdentifier?: string
+  dataSources?: string
+  technology?: string
+  intendedUsers?: string
+  resultsText?: string
+  researchAreas?: string[]
+  visibility?: 'PUBLIC' | 'CAMPUS' | 'RESTRICTED' | 'EMBARGOED'
+  lifecycleStatus?: 'PUBLISHED' | 'COMPLETED' | 'INCOMPLETE' | 'SUSPENDED' | 'ARCHIVED'
 }
 
 export interface DocumentImportAccepted {
@@ -315,6 +385,12 @@ export interface DocumentImportJob {
 
 export async function importStudyMetadata(input: StudyMetadataInput): Promise<unknown> {
   return request('/imports/studies', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export async function publishExtractedStudy(jobId: string, input: StudyMetadataInput): Promise<unknown> {
+  return request(`/imports/documents/jobs/${encodeURIComponent(jobId)}/publish-study`, {
+    method: 'POST', body: JSON.stringify(input),
+  })
 }
 
 export async function uploadStudyDocument(file: File): Promise<DocumentImportAccepted> {
@@ -470,6 +546,25 @@ export interface DecisionContext {
   decided: boolean
 }
 
+export interface AdviserRecommendationRecord {
+  id: string
+  proposalId: string
+  discoveryRunId: string
+  recommendation: 'NEW' | 'IMPROVE' | 'CONTINUE' | 'POSSIBLE_DUPLICATE' | 'REVIEW_REQUIRED'
+  rationale: string
+  adviser: string
+  recordedAt: string
+}
+
+export interface RouteEvidenceAssessment {
+  continuationReady: boolean
+  continuationCoverage: number
+  codeAccess: boolean
+  dataAccess: boolean
+  improvementReady: boolean
+  improvementClaimCount: number
+}
+
 export async function getDecisionContext(): Promise<DecisionContext> {
   const [proposals, runs, decisions] = await Promise.all([
     request<ProposalRecord[]>('/proposals'), request<DiscoveryRecord[]>('/discovery-runs'), request<DecisionRecord[]>('/proposal-decisions'),
@@ -478,6 +573,25 @@ export async function getDecisionContext(): Promise<DecisionContext> {
   const discovery = runs.find((run) => proposals.some((proposal) => proposal.id === run.proposalId) && !decidedIds.has(run.proposalId)) ?? runs[0] ?? null
   const proposal = discovery ? proposals.find((item) => item.id === discovery.proposalId) ?? null : null
   return { proposal, discovery, decided: Boolean(discovery && decidedIds.has(discovery.proposalId)) }
+}
+
+export async function getAdviserRecommendations(proposalId: string) {
+  return request<AdviserRecommendationRecord[]>(`/proposals/${encodeURIComponent(proposalId)}/adviser-recommendations`)
+}
+
+export async function recordAdviserRecommendation(
+  proposalId: string,
+  discoveryRunId: string,
+  recommendation: AdviserRecommendationRecord['recommendation'],
+  rationale: string,
+) {
+  return request<AdviserRecommendationRecord>(`/proposals/${encodeURIComponent(proposalId)}/adviser-recommendations`, {
+    method: 'POST', body: JSON.stringify({ discoveryRunId, recommendation, rationale }),
+  })
+}
+
+export async function getRouteEvidence(proposalId: string, predecessorId: string) {
+  return request<RouteEvidenceAssessment>(`/proposals/${encodeURIComponent(proposalId)}/route-evidence/${encodeURIComponent(predecessorId)}`)
 }
 
 export interface CompletionAssessment {

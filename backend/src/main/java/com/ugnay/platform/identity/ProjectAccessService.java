@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Value;
 import java.nio.ByteBuffer;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -36,7 +37,7 @@ public class ProjectAccessService {
         List<byte[]> unassigned = jdbc.query("SELECT p.id FROM projects p WHERE NOT EXISTS (SELECT 1 FROM project_memberships pm WHERE pm.project_id=p.id)",
                 (row, index) -> row.getBytes(1));
         for (byte[] projectId : unassigned) {
-            List<UserRoleRow> candidates = jdbc.query("SELECT DISTINCT u.id,r.role_code FROM user_accounts u JOIN user_roles ur ON ur.user_id=u.id JOIN roles r ON r.id=ur.role_id JOIN projects p ON p.id=? WHERE u.account_status='ACTIVE' AND u.department_id=p.department_id AND r.role_code IN ('STUDENT','ADVISER','COORDINATOR','REVIEWER')",
+            List<UserRoleRow> candidates = jdbc.query("SELECT DISTINCT u.id,r.code FROM user_accounts u JOIN user_roles ur ON ur.user_id=u.id JOIN roles r ON r.id=ur.role_id JOIN projects p ON p.id=? WHERE u.account_status='ACTIVE' AND u.department_id=p.department_id AND r.code IN ('STUDENT','ADVISER','COORDINATOR','REVIEWER')",
                     (row, index) -> new UserRoleRow(row.getBytes(1), row.getString(2)), projectId);
             for (UserRoleRow candidate : candidates) {
                 jdbc.update("INSERT INTO project_memberships(project_id,user_id,membership_role,joined_at) VALUES(?,?,?,?)",
@@ -57,6 +58,40 @@ public class ProjectAccessService {
     public void requireAccess(Authentication authentication, UUID projectId) {
         if (!canAccess(authentication, projectId)) {
             throw new org.springframework.security.access.AccessDeniedException("You are not a member of the selected project.");
+        }
+    }
+
+    /**
+     * Route-evidence reads are never covered by the public-demo shortcut. A
+     * non-curator must belong to the proposal department and, once the proposal
+     * has a project, hold an explicit membership in that project.
+     */
+    public boolean canAccessProposal(Authentication authentication, UUID proposalId) {
+        if (authentication == null || !authentication.isAuthenticated()
+                || "anonymousUser".equals(authentication.getName())) return false;
+        if (authentication.getAuthorities().stream()
+                .anyMatch(authority -> authority.getAuthority().equals("ROLE_CURATOR"))) return true;
+        List<ProposalAccessRow> proposals = jdbc.query(
+                "SELECT pc.department_id,pr.id FROM proposals p JOIN problem_cases pc ON pc.id=p.problem_case_id "
+                        + "LEFT JOIN projects pr ON pr.proposal_id=p.id WHERE p.id=?",
+                (row, index) -> new ProposalAccessRow(row.getBytes(1), row.getBytes(2)), bytes(proposalId));
+        if (proposals.size() != 1) return false;
+        List<AccountAccessRow> accounts = jdbc.query(
+                "SELECT id,department_id FROM user_accounts WHERE LOWER(email)=LOWER(?) AND account_status='ACTIVE'",
+                (row, index) -> new AccountAccessRow(row.getBytes(1), row.getBytes(2)), authentication.getName());
+        if (accounts.size() != 1 || accounts.getFirst().departmentId() == null
+                || !Arrays.equals(accounts.getFirst().departmentId(), proposals.getFirst().departmentId())) return false;
+        if (proposals.getFirst().projectId() == null) return true;
+        Integer memberships = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM project_memberships WHERE project_id=? AND user_id=?",
+                Integer.class, proposals.getFirst().projectId(), accounts.getFirst().userId());
+        return memberships != null && memberships > 0;
+    }
+
+    public void requireProposalAccess(Authentication authentication, UUID proposalId) {
+        if (!canAccessProposal(authentication, proposalId)) {
+            throw new org.springframework.security.access.AccessDeniedException(
+                    "The proposal route evidence is not available to this account.");
         }
     }
 
@@ -89,4 +124,6 @@ public class ProjectAccessService {
     private static UUID uuid(byte[] value) { ByteBuffer buffer = ByteBuffer.wrap(value); return new UUID(buffer.getLong(), buffer.getLong()); }
     public record MembershipView(UUID userId, String displayName, String email, String role, Instant joinedAt) {}
     private record UserRoleRow(byte[] userId, String role) {}
+    private record ProposalAccessRow(byte[] departmentId, byte[] projectId) {}
+    private record AccountAccessRow(byte[] userId, byte[] departmentId) {}
 }

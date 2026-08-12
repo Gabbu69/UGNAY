@@ -12,6 +12,20 @@ Use one coherent campus problem instead of unrelated CRUD records. The recommend
 
 This fixture is intended to exercise ranking explanations, human routing, trace findings, approved growth, change impact, and continuity in a single narrative. It is a demonstration plan, not evidence that every release gate has passed.
 
+Synthetic fixtures may demonstrate controls and UI states, but must be visibly labelled and must never be presented as thesis evaluation evidence. Real algorithm metrics remain `UNASSESSED` until an institutional corpus, query set, and qrels are independently reviewed, adjudicated, frozen, and run.
+
+## Integrated defense journey
+
+This is the shortest coherent demonstration of the three subject areas and the research framework:
+
+1. Sign in as an authorized user and open `/research-lab/query`.
+2. Execute `FIND THESIS WHERE TOPIC = "flood" AND YEAR >= 2022 USING TFIDF ORDER BY RELEVANCE LIMIT 5` with processing trace enabled.
+3. Show the real tokens and source spans, AST, completed semantic validation, typed allow-listed action, algorithm version, warehouse snapshot/as-of reference, authorized results, and readable explanations. Enter a semicolon/SQL keyword and show the stage-specific safe diagnostic rather than a database error.
+4. Open `/research-lab/warehouse`. Show the latest successful `Collect -> Validate -> Clean -> Transform -> Store -> Analyze` stages, source hash/count, strict-year quality issues, distinct-study tables, repeated topics, explicit research areas, observed trends, and continuation history. If no snapshot exists, demonstrate the honest `UNASSESSED` state; a curator may then refresh actual catalogue evidence.
+5. Open `/research-lab/evaluation`. Select a genuinely frozen dataset and show the identical corpus SHA-256, structured query hashes/splits, two-reviewer/adjudicated qrel completeness, algorithm configurations, environment hash, and durable run status.
+6. Show the lexical, TF-IDF, semantic, and hybrid rows at primary K=5, then inspect all K values, p50/p95 latency, resource evidence, and export. If semantic inference is unavailable, show `UNAVAILABLE`/`PARTIAL` rather than hiding or replacing it.
+7. Return to Decision Room and state the boundary: the experiment compares retrieval evidence only; an adviser recommends and a coordinator decides.
+
 ## Role journey
 
 1. **Curator:** open **Ingest research** in the Research Atlas, register the three prior studies individually as reviewed metadata, upload their PDFs separately, and review durable extraction state and restricted visibility. CSV batch ingestion is not part of this pilot journey.
@@ -27,9 +41,9 @@ This fixture is intended to exercise ranking explanations, human routing, trace 
 
 The persistent bootstrap administrator may perform every role in a local demo. Open the top-bar account control, sign in, confirm every live role badge, and use the curator access desk to issue separate role invitations and grant selected-project memberships. The one-time token must be copied when created and accepted through the public invitation API before that account signs in. The UI distinguishes live data from unavailable data and never substitutes authoritative-looking demo records.
 
-## Verified here versus target/pending — 2026-08-09
+## Previously verified baseline versus target/pending — 2026-08-09
 
-“Verified here” means directly observed in this workspace. It does not promote a target into a completed release gate.
+“Verified here” means directly observed for the pre-framework baseline on that date. It does not promote a target into a completed release gate, and it does not by itself verify the later V6-V8/RQL/evaluation/warehouse upgrade. Final handoff must append fresh full-gate results instead of silently reusing these counts.
 
 | Verified here | Result |
 |---|---|
@@ -44,7 +58,8 @@ The persistent bootstrap administrator may perform every role in a local demo. O
 | Container deployment | Start and smoke-test the optional Docker Compose MySQL 8.4, MinIO, ClamAV, application, and Caddy TLS profile |
 | Real-service integration | Run the Testcontainers suite against MySQL 8.4 and MinIO |
 | Capacity | Measure warm discovery p95 with 10,000 studies and trace analysis with 1,000 nodes |
-| Calibration | Double-review 100–200 English/Filipino pairs and report Recall@5, NDCG@5, and duplicate false-positive rate |
+| Research dataset | Create a real frozen corpus/query set; obtain two independent 0-3 judgments and coordinator qrels; run every arm; report P/R/F1/MRR/NDCG plus availability, latency, resources, hashes, and exclusions |
+| Calibration | Use the frozen real dataset to assess Recall@5 and NDCG@5; separately adjudicate route classifications before reporting duplicate false-positive rate |
 | Recovery | Complete and document an isolated MySQL plus MinIO backup/restore rehearsal |
 | Institutional acceptance | Complete adviser/coordinator UAT, privacy review, and deployment approval |
 
@@ -56,7 +71,11 @@ The following rows are release acceptance conditions. Unless a row is explicitly
 |---|---|
 | Identity | Account panel distinguishes anonymous, authenticated, and unavailable session states; login refreshes live workspace data; logout fetches CSRF metadata and invalidates the JDBC session |
 | Catalogue | Curator PDF upload returns `202` only after clean scan/private storage/durable queueing; status survives restart, SSE remains optional, and low-text PDFs require manual metadata |
+| Catalogue search | Atlas uses paginated server-side search; archived/restricted rows obey server authorization and a row shows similarity only when the current query/proposal actually produced it |
 | Discovery | Top candidates show field/component scores, confidence, status, excerpts, model/config version, and redaction |
+| Query interpreter | Lexer, parser, AST, semantic validator, typed plan, and executor are the real request path; limits, injection cases, context authorization, diagnostics, trace, warehouse reference, version, redaction, and timeout are tested |
+| Evaluation | One frozen hash-addressed corpus/query/qrel manifest feeds all four arms; two-reviewer/adjudication/freeze rules hold; jobs survive restart; metrics and missing resource/model states persist without fabricated zeros |
+| Warehouse | Stages execute in order; invalid years remain null with issues; identical source is unchanged; failure does not replace the published snapshot; scoped JSON and CSV contain the same actual aggregates |
 | Decision | Engine output cannot change proposal state; adviser and coordinator actions remain distinct and audited |
 | Traceability | Evidence Authoring Studio writes ETag-protected items, revisions, links, and executions; graph and matrix render the same filtered chain; cross-project links are rejected |
 | Requirements | Missing objective, acceptance criteria, verification method, or measurable NFR threshold blocks baseline readiness |
@@ -98,7 +117,7 @@ This section defines the intended acceptance suite. It does not report completed
 
 ### Retrieval benchmark target
 
-Use 100–200 double-reviewed English/Filipino proposal-study pairs. Keep adjudicated labels separate from development fixtures. Record corpus hash, algorithm/model version, evaluator agreement, and thresholds.
+Use a frozen institutional corpus with approximately 100-200 independently reviewed English/Filipino query-study judgments, enough structured queries to exercise the intended domains, and a held-out `TEST` split. Keep adjudicated labels separate from development and synthetic fixtures. Persist corpus/query/qrel/dataset hashes, algorithm/model/config/build/environment evidence, evaluator completeness, and thresholds. Run lexical, TF-IDF, semantic, and hybrid arms against the identical manifest.
 
 Release targets:
 
@@ -106,6 +125,8 @@ Release targets:
 - NDCG@5 at least `0.75`.
 - Possible-duplicate false-positive rate no higher than `10%`.
 - Every failed target is reported; do not retune on the held-out evaluation set.
+
+These are targets only. Until the real dataset is frozen and executed, the Research Laboratory must display `UNASSESSED`; a synthetic fixture cannot satisfy them.
 
 ### Performance targets
 

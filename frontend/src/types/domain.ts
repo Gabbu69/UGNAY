@@ -20,7 +20,7 @@ export interface Study {
   solutionSimilarity: number
   objectiveOverlap: number
   confidence: number
-  relationship: LineageType | 'SIMILAR'
+  relationship: LineageType | 'SIMILAR' | 'UNAVAILABLE'
   matchReason: string
   excerpt: string
   restricted?: boolean

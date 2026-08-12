@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: UGNAY Research Continuity API
-  version: 0.2.0
-  description: Explainable research discovery, traceability, scope analysis, and continuity API. Recommendations never replace academic decisions.
+  version: 0.3.0
+  description: Explainable research discovery, interpreted research queries, reproducible retrieval evaluation, historical research warehousing, traceability, scope analysis, and continuity API. Recommendations and metrics never replace academic decisions.
 servers:
   - url: /api/v1
 security:
@@ -94,6 +94,46 @@ paths:
       responses:
         '200': { description: Study detail }
         '404': { $ref: '#/components/responses/Problem' }
+  /catalogue/search:
+    get:
+      summary: Search the catalogue with server-side filtering and pagination
+      description: Requires an authenticated session. Archived rows are excluded. Non-curators do not receive RESTRICTED or EMBARGOED rows; this endpoint does not manufacture a similarity score.
+      parameters:
+        - { in: query, name: q, schema: { type: string }, description: Case-insensitive text search over actual catalogue fields }
+        - { in: query, name: department, schema: { type: string }, description: Case-insensitive exact department code }
+        - { in: query, name: yearFrom, schema: { type: integer } }
+        - { in: query, name: yearTo, schema: { type: integer } }
+        - { in: query, name: lifecycle, schema: { type: string }, description: Case-insensitive exact lifecycle status }
+        - { in: query, name: topic, schema: { type: string }, description: Exact active canonical KEYWORD or RESEARCH_AREA label }
+        - { in: query, name: page, schema: { type: integer, default: 0, minimum: 0 } }
+        - { in: query, name: size, schema: { type: integer, default: 20, minimum: 1, maximum: 100 }, description: Values are clamped to 1 through 100 }
+        - { in: query, name: sort, schema: { enum: [YEAR_DESC, YEAR_ASC, TITLE_ASC, TITLE_DESC], default: YEAR_DESC } }
+      responses:
+        '200': { description: Authorized page of catalogue facts, content: { application/json: { schema: { $ref: '#/components/schemas/CatalogueSearchPage' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /research-queries/grammar:
+    get:
+      summary: Read the implemented UGNAY RQL grammar, examples, limits, and safety boundary
+      description: Requires any authenticated role.
+      responses:
+        '200': { description: Versioned grammar description, content: { application/json: { schema: { $ref: '#/components/schemas/ResearchQueryGrammar' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+  /research-queries/execute:
+    post:
+      summary: Tokenize, parse, validate, interpret, and execute one bounded UGNAY RQL statement
+      description: Requires any authenticated role and CSRF. Language, semantic, availability, and safe execution failures are represented in the HTTP 200 response status/diagnostics; no SQL is accepted or exposed.
+      parameters: [ { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResearchQueryExecuteRequest' }
+      responses:
+        '200': { description: Processing trace and authorized result or a structured language/execution diagnostic, content: { application/json: { schema: { $ref: '#/components/schemas/ResearchQueryExecuteResponse' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
   /imports/studies:
     post:
       summary: Import reviewed study metadata
@@ -383,6 +423,232 @@ paths:
         '201': { description: Invitation including its one-time raw token, content: { application/json: { schema: { $ref: '#/components/schemas/Invitation' } } } }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
+  /evaluation/datasets:
+    get:
+      summary: List retrieval-evaluation dataset versions
+      description: Requires ADVISER, COORDINATOR, or CURATOR.
+      responses:
+        '200': { description: Dataset versions, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/EvaluationDatasetVersion' } } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+    post:
+      summary: Create a draft immutable-corpus evaluation version
+      description: Requires CURATOR. Omitted or empty studyIds snapshots all current catalogue studies; the resolved corpus must contain 1 through 10,000 studies.
+      parameters: [ { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EvaluationDatasetRequest' } } } }
+      responses:
+        '201': { description: Draft dataset version, headers: { Location: { schema: { type: string } } }, content: { application/json: { schema: { $ref: '#/components/schemas/EvaluationDatasetVersion' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /evaluation/datasets/{versionId}:
+    get:
+      summary: Read one evaluation dataset version and manifest status
+      description: Requires ADVISER, COORDINATOR, or CURATOR.
+      parameters: [ { in: path, name: versionId, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        '200': { description: Dataset version, content: { application/json: { schema: { $ref: '#/components/schemas/EvaluationDatasetVersion' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /evaluation/datasets/{versionId}/queries:
+    get:
+      summary: List structured queries and review completeness
+      description: Requires ADVISER, COORDINATOR, or CURATOR.
+      parameters: [ { in: path, name: versionId, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        '200': { description: Structured evaluation queries, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/EvaluationQuery' } } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+    post:
+      summary: Add one structured query to a draft dataset
+      description: Requires CURATOR. Frozen versions reject authoring.
+      parameters:
+        - { in: path, name: versionId, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EvaluationQueryRequest' } } } }
+      responses:
+        '201': { description: Created structured query, headers: { Location: { schema: { type: string } } }, content: { application/json: { schema: { $ref: '#/components/schemas/EvaluationQuery' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /evaluation/datasets/{versionId}/queries/import:
+    post:
+      summary: Import 1 through 500 structured queries into a draft dataset
+      description: Requires CURATOR. Requests are added sequentially; a later invalid item can fail after earlier items have persisted, so callers should reconcile with the query-list endpoint.
+      parameters:
+        - { in: path, name: versionId, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: array, minItems: 1, maxItems: 500, items: { $ref: '#/components/schemas/EvaluationQueryRequest' } }
+      responses:
+        '201': { description: Queries created before successful completion, headers: { Location: { schema: { type: string } } }, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/EvaluationQuery' } } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /evaluation/queries/{queryId}/judgments:
+    post:
+      summary: Append an independent relevance-judgment revision
+      description: Requires ADVISER or COORDINATOR. A judgment grades one study in the query's frozen corpus from 0 through 3; it does not change an academic route.
+      parameters:
+        - { in: path, name: queryId, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EvaluationGradeRequest' } } } }
+      responses:
+        '201': { description: Append-only judgment revision, headers: { Location: { schema: { type: string } } }, content: { application/json: { schema: { $ref: '#/components/schemas/EvaluationJudgment' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /evaluation/queries/{queryId}/qrels:
+    post:
+      summary: Append a coordinator-adjudicated graded qrel
+      description: Requires COORDINATOR and two distinct current reviewer judgments for the same query-study pair.
+      parameters:
+        - { in: path, name: queryId, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EvaluationGradeRequest' } } } }
+      responses:
+        '201': { description: Append-only adjudicated qrel, headers: { Location: { schema: { type: string } } }, content: { application/json: { schema: { $ref: '#/components/schemas/EvaluationQrel' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /evaluation/datasets/{versionId}/freeze:
+    post:
+      summary: Freeze the corpus, queries, and independently adjudicated qrels
+      description: Requires COORDINATOR. Every query needs at least one relevant adjudicated qrel; every adjudicated pair needs two distinct current reviewers and re-adjudication after a reviewer revision.
+      parameters:
+        - { in: path, name: versionId, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '200': { description: Frozen hashed dataset version, content: { application/json: { schema: { $ref: '#/components/schemas/EvaluationDatasetVersion' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /evaluation/runs:
+    post:
+      summary: Queue a durable four-arm retrieval comparison
+      description: Requires ADVISER, COORDINATOR, or CURATOR. Only a frozen hashed dataset can run. Poll the returned Location; evaluation never mutates a proposal decision.
+      parameters: [ { $ref: '#/components/parameters/CsrfHeader' } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EvaluationRunRequest' } } } }
+      responses:
+        '202': { description: Durable queued run, headers: { Location: { schema: { type: string } } }, content: { application/json: { schema: { $ref: '#/components/schemas/EvaluationRun' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /evaluation/runs/{runId}:
+    get:
+      summary: Poll durable evaluation-run state
+      description: Requires ADVISER, COORDINATOR, or CURATOR.
+      parameters: [ { in: path, name: runId, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        '200': { description: Current run state, content: { application/json: { schema: { $ref: '#/components/schemas/EvaluationRun' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /evaluation/runs/{runId}/report:
+    get:
+      summary: Read the dataset manifest, environment, algorithms, metrics, and resource report
+      description: Requires ADVISER, COORDINATOR, or CURATOR. Curators receive ranked hits; adviser/coordinator responses retain an empty rankedHits array. A queued/running report may have no algorithm rows yet.
+      parameters: [ { in: path, name: runId, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        '200': { description: Reproducible evaluation report, content: { application/json: { schema: { $ref: '#/components/schemas/EvaluationReport' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /evaluation/runs/{runId}/report.csv:
+    get:
+      summary: Export aggregate evaluation metrics as CSV
+      description: Requires ADVISER, COORDINATOR, or CURATOR. Ranked hits are never exported; null metric values are emitted as UNAVAILABLE.
+      parameters: [ { in: path, name: runId, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        '200': { description: Aggregate metric CSV, headers: { Content-Disposition: { schema: { type: string } } }, content: { text/csv: { schema: { type: string } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /warehouse/refresh:
+    post:
+      summary: Run the six-stage warehouse pipeline and publish only a complete snapshot
+      description: Requires CURATOR. The same source hash returns UNCHANGED. A caught pipeline failure returns HTTP 500 with the durable FAILED LoadView and does not replace the latest published snapshot.
+      parameters: [ { $ref: '#/components/parameters/CsrfHeader' } ]
+      responses:
+        '200': { description: Source unchanged, content: { application/json: { schema: { $ref: '#/components/schemas/WarehouseLoad' } } } }
+        '201': { description: New immutable snapshot published, content: { application/json: { schema: { $ref: '#/components/schemas/WarehouseLoad' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '500': { description: Failed durable load; prior published snapshot retained, content: { application/json: { schema: { $ref: '#/components/schemas/WarehouseLoad' } } } }
+  /warehouse/loads/latest:
+    get:
+      summary: Read the latest warehouse load and stage/quality state
+      description: Requires CURATOR. If no load exists, returns an honest UNASSESSED object rather than 404.
+      responses:
+        '200': { description: Latest load or UNASSESSED state, content: { application/json: { schema: { $ref: '#/components/schemas/WarehouseLoad' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+  /warehouse/loads/{loadId}:
+    get:
+      summary: Read one durable warehouse load
+      description: Requires CURATOR.
+      parameters: [ { in: path, name: loadId, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        '200': { description: Load state, content: { application/json: { schema: { $ref: '#/components/schemas/WarehouseLoad' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /warehouse/loads/{loadId}/quality:
+    get:
+      summary: Read field-level quality issues for one warehouse load
+      description: Requires CURATOR.
+      parameters: [ { in: path, name: loadId, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        '200': { description: Quality issues, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/WarehouseQualityIssue' } } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /warehouse/analytics:
+    get:
+      summary: Read authorized historical research aggregates from the latest published snapshot
+      description: Requires any authenticated role. Non-curators receive globally visible plus same-department non-restricted rows. No snapshot returns UNASSESSED with empty arrays.
+      parameters:
+        - { in: query, name: department, schema: { type: string, maxLength: 160 }, description: Case-insensitive exact department code or name }
+        - { in: query, name: fromYear, schema: { type: integer, minimum: 1900, maximum: 2200 } }
+        - { in: query, name: toYear, schema: { type: integer, minimum: 1900, maximum: 2200 } }
+      responses:
+        '200': { description: "Snapshot/as-of, quality, actual counts, topics, research areas, and trends", content: { application/json: { schema: { $ref: '#/components/schemas/WarehouseAnalytics' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /warehouse/analytics.csv:
+    get:
+      summary: Export the same authorized warehouse analytics as CSV
+      description: Requires any authenticated role. Filters and row scope match the JSON endpoint; cells are protected against spreadsheet-formula injection.
+      parameters:
+        - { in: query, name: department, schema: { type: string, maxLength: 160 } }
+        - { in: query, name: fromYear, schema: { type: integer, minimum: 1900, maximum: 2200 } }
+        - { in: query, name: toYear, schema: { type: integer, minimum: 1900, maximum: 2200 } }
+      responses:
+        '200': { description: Authorized analytics CSV, headers: { Content-Disposition: { schema: { type: string } } }, content: { text/csv: { schema: { type: string, format: binary } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+  /warehouse/continuation-history:
+    get:
+      summary: Read authorized predecessor/successor/claim history
+      description: Requires any authenticated role. Source/target visibility applies and non-curators need explicit membership for successor-project facts.
+      parameters: [ { in: query, name: limit, schema: { type: integer, default: 100, minimum: 1, maximum: 500 }, description: Values are clamped to 1 through 500 } ]
+      responses:
+        '200': { description: Authorized continuation history or UNASSESSED state, content: { application/json: { schema: { $ref: '#/components/schemas/WarehouseContinuationHistory' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /warehouse/continuation-history.csv:
+    get:
+      summary: Export authorized continuation history as CSV
+      description: Requires any authenticated role. Scope matches JSON and cells are protected against spreadsheet-formula injection.
+      parameters: [ { in: query, name: limit, schema: { type: integer, default: 500, minimum: 1, maximum: 500 }, description: Values are clamped to 1 through 500 } ]
+      responses:
+        '200': { description: Authorized continuation CSV, headers: { Content-Disposition: { schema: { type: string } } }, content: { text/csv: { schema: { type: string, format: binary } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
 components:
   securitySchemes:
     sessionCookie:
@@ -426,6 +692,473 @@ components:
         acceptedAt: { type: [string, 'null'], format: date-time }
         createdAt: { type: string, format: date-time }
         oneTimeToken: { type: [string, 'null'], description: Present only in the invitation-creation response }
+    CatalogueSearchPage:
+      type: object
+      required: [items, totalItems, page, pageSize, generatedAt]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/CatalogueStudySummary' } }
+        totalItems: { type: integer, format: int64 }
+        page: { type: integer }
+        pageSize: { type: integer }
+        generatedAt: { type: string, format: date-time }
+    CatalogueStudySummary:
+      type: object
+      required: [id, title, keywords, objectiveCount]
+      properties:
+        id: { type: string, format: uuid }
+        institutionalCode: { type: [string, 'null'] }
+        title: { type: string }
+        academicYear: { type: [string, 'null'] }
+        completionYear: { type: [integer, 'null'] }
+        departmentCode: { type: [string, 'null'] }
+        departmentName: { type: [string, 'null'] }
+        program: { type: [string, 'null'] }
+        lifecycleStatus: { type: [string, 'null'] }
+        visibility: { type: [string, 'null'] }
+        abstractText: { type: [string, 'null'] }
+        problemStatement: { type: [string, 'null'] }
+        methodology: { type: [string, 'null'] }
+        keywords: { type: array, items: { type: string } }
+        resultsText: { type: [string, 'null'] }
+        objectiveCount: { type: integer }
+    ResearchQueryGrammar:
+      type: object
+      required: [version, ebnf, fields, comparators, algorithms, examples, limits, safety]
+      properties:
+        version: { type: string, example: ugnay-rql-1.0.0 }
+        ebnf: { type: string }
+        fields: { type: array, items: { type: string } }
+        comparators: { type: array, items: { type: string } }
+        algorithms: { type: array, items: { enum: [LEXICAL, TFIDF, SEMANTIC, HYBRID] } }
+        examples: { type: array, items: { type: string } }
+        limits: { type: object, additionalProperties: { type: integer } }
+        safety: { type: string }
+    ResearchQueryExecuteRequest:
+      type: object
+      properties:
+        source: { type: [string, 'null'], maxLength: 4096 }
+        includeTrace: { type: [boolean, 'null'], default: false }
+        selectedProposalId: { type: [string, 'null'], format: uuid }
+    SourceSpan:
+      type: object
+      required: [startOffset, endOffset, startLine, startColumn, endLine, endColumn]
+      properties:
+        startOffset: { type: integer }
+        endOffset: { type: integer }
+        startLine: { type: integer, minimum: 1 }
+        startColumn: { type: integer, minimum: 1 }
+        endLine: { type: integer, minimum: 1 }
+        endColumn: { type: integer, minimum: 1 }
+    ResearchQueryToken:
+      type: object
+      required: [type, lexeme, span]
+      properties:
+        type: { type: string }
+        lexeme: { type: string }
+        literal: {}
+        span: { $ref: '#/components/schemas/SourceSpan' }
+    ResearchQueryAstNode:
+      type: object
+      required: [kind, span, children]
+      properties:
+        kind: { type: string }
+        value: { type: [string, 'null'] }
+        span: { $ref: '#/components/schemas/SourceSpan' }
+        children: { type: array, items: { $ref: '#/components/schemas/ResearchQueryAstNode' } }
+    ResearchQueryDiagnostic:
+      type: object
+      required: [stage, code, message, span, expected]
+      properties:
+        stage: { enum: [LEXER, PARSER, SEMANTIC, EXECUTION] }
+        code: { type: string }
+        message: { type: string }
+        span: { $ref: '#/components/schemas/SourceSpan' }
+        expected: { type: array, items: { type: string } }
+    ResearchQueryValidation:
+      type: object
+      required: [valid, completedStage]
+      properties:
+        valid: { type: boolean }
+        completedStage: { enum: [LEXER, PARSER, SEMANTIC, EXECUTION] }
+    ResearchQueryAction:
+      type: object
+      required: [target, contextAuthorized, algorithmVersion, sort, direction, limit, filterCount, executor]
+      properties:
+        target: { enum: [THESIS, RELATED] }
+        contextType: { type: [string, 'null'], enum: [PROPOSAL, THESIS, TEXT, null] }
+        contextAuthorized: { type: boolean }
+        algorithmVersion: { type: string }
+        sort: { enum: [RELEVANCE, SIMILARITY, YEAR, TITLE] }
+        direction: { enum: [ASC, DESC] }
+        limit: { type: integer, minimum: 1, maximum: 100 }
+        filterCount: { type: integer, minimum: 0 }
+        executor: { type: string, example: ALLOW_LISTED_AST_INTERPRETER_WITH_BOUND_JDBC }
+    ResearchQueryWarehouseReference:
+      type: object
+      required: [status, explanation]
+      properties:
+        status: { enum: [PUBLISHED, UNAVAILABLE] }
+        snapshotId: { type: [string, 'null'], format: uuid }
+        asOf: { type: [string, 'null'], format: date-time }
+        explanation: { type: string }
+    ResearchQueryScoreComponents:
+      type: object
+      required: [lexical, tfIdf, controlledConcept]
+      properties:
+        lexical: { type: number }
+        tfIdf: { type: number }
+        semantic: { type: [number, 'null'] }
+        controlledConcept: { type: number }
+    ResearchQueryResult:
+      type: object
+      required: [rank, id, title, keywords, researchAreas, scoreStatus, components, matchedTerms, explanations, restricted]
+      properties:
+        rank: { type: integer, minimum: 1 }
+        id: { type: string, format: uuid }
+        code: { type: [string, 'null'] }
+        title: { type: string, description: Restricted placeholder for protected evidence when necessary }
+        academicYear: { type: [string, 'null'] }
+        year: { type: [integer, 'null'] }
+        department: { type: [string, 'null'] }
+        lifecycleStatus: { type: [string, 'null'] }
+        visibility: { type: [string, 'null'] }
+        abstractText: { type: [string, 'null'] }
+        methodology: { type: [string, 'null'] }
+        keywords: { type: array, items: { type: string } }
+        researchAreas: { type: array, items: { type: string } }
+        similarityScore: { type: [number, 'null'] }
+        scoreStatus: { enum: [ASSESSED, UNASSESSED] }
+        components: { $ref: '#/components/schemas/ResearchQueryScoreComponents' }
+        matchedTerms: { type: array, items: { type: string } }
+        explanations: { type: array, items: { type: string } }
+        restricted: { type: boolean }
+    ResearchQueryExecuteResponse:
+      type: object
+      required: [languageVersion, valid, status, traceIncluded, tokens, validation, assessmentStatus, warehouse, diagnostics, results, latencyMillis]
+      properties:
+        languageVersion: { type: string }
+        valid: { type: boolean }
+        status: { enum: [EXECUTED, PARTIAL, UNAVAILABLE, INVALID, TIMED_OUT, FAILED] }
+        traceIncluded: { type: boolean }
+        tokens: { type: array, items: { $ref: '#/components/schemas/ResearchQueryToken' } }
+        ast: { anyOf: [ { $ref: '#/components/schemas/ResearchQueryAstNode' }, { type: 'null' } ] }
+        validation: { $ref: '#/components/schemas/ResearchQueryValidation' }
+        interpretedAction: { anyOf: [ { $ref: '#/components/schemas/ResearchQueryAction' }, { type: 'null' } ] }
+        algorithmVersion: { type: [string, 'null'] }
+        semanticProvider: { type: [string, 'null'] }
+        assessmentStatus: { enum: [ASSESSED, PARTIAL, UNAVAILABLE, UNASSESSED] }
+        warehouse: { $ref: '#/components/schemas/ResearchQueryWarehouseReference' }
+        diagnostics: { type: array, items: { $ref: '#/components/schemas/ResearchQueryDiagnostic' } }
+        results: { type: array, items: { $ref: '#/components/schemas/ResearchQueryResult' } }
+        latencyMillis: { type: integer, format: int64 }
+    EvaluationDatasetRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 240 }
+        description: { type: [string, 'null'], maxLength: 4000 }
+        studyIds: { type: [array, 'null'], maxItems: 10000, items: { type: string, format: uuid } }
+    EvaluationDatasetVersion:
+      type: object
+      required: [datasetId, versionId, version, name, status, corpusSha256, corpusSize, queryCount, adjudicatedQrelCount, createdAt]
+      properties:
+        datasetId: { type: string, format: uuid }
+        versionId: { type: string, format: uuid }
+        version: { type: integer, minimum: 1 }
+        name: { type: string }
+        description: { type: [string, 'null'] }
+        status: { enum: [DRAFT, FROZEN] }
+        corpusSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        datasetSha256: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$' }
+        corpusSize: { type: integer, minimum: 0 }
+        queryCount: { type: integer, minimum: 0 }
+        adjudicatedQrelCount: { type: integer, minimum: 0 }
+        createdAt: { type: string, format: date-time }
+        frozenAt: { type: [string, 'null'], format: date-time }
+    EvaluationQueryRequest:
+      type: object
+      required: [externalKey, split, title]
+      properties:
+        externalKey: { type: string, minLength: 1, maxLength: 120, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$' }
+        split: { enum: [DEV, TEST] }
+        title: { type: string, minLength: 1, maxLength: 600 }
+        problemStatement: { type: [string, 'null'], maxLength: 12000 }
+        objectives: { type: [array, 'null'], maxItems: 30, items: { type: string, minLength: 1, maxLength: 2000 } }
+        proposedSolution: { type: [string, 'null'], maxLength: 12000 }
+        methodology: { type: [string, 'null'], maxLength: 6000 }
+        dataSources: { type: [string, 'null'], maxLength: 6000 }
+        technology: { type: [string, 'null'], maxLength: 6000 }
+        intendedUsers: { type: [string, 'null'], maxLength: 6000 }
+        stakeholders: { type: [string, 'null'], maxLength: 6000 }
+        siteContext: { type: [string, 'null'], maxLength: 6000 }
+    EvaluationQuery:
+      type: object
+      required: [id, datasetVersionId, externalKey, split, title, querySha256, distinctReviewerCount, adjudicatedQrelCount, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        datasetVersionId: { type: string, format: uuid }
+        externalKey: { type: string }
+        split: { enum: [DEV, TEST] }
+        title: { type: string }
+        querySha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        distinctReviewerCount: { type: integer, minimum: 0 }
+        adjudicatedQrelCount: { type: integer, minimum: 0 }
+        createdAt: { type: string, format: date-time }
+    EvaluationGradeRequest:
+      type: object
+      required: [studyId, rationale]
+      properties:
+        studyId: { type: string, format: uuid }
+        relevanceGrade: { type: integer, minimum: 0, maximum: 3, default: 0, description: Omission currently deserializes to primitive grade 0; clients should always send an explicit grade }
+        rationale: { type: string, minLength: 1, maxLength: 4000 }
+    EvaluationJudgment:
+      type: object
+      required: [id, queryId, studyId, reviewer, revision, relevanceGrade, rationale, judgedAt]
+      properties:
+        id: { type: string, format: uuid }
+        queryId: { type: string, format: uuid }
+        studyId: { type: string, format: uuid }
+        reviewer: { type: string }
+        revision: { type: integer, minimum: 1 }
+        relevanceGrade: { type: integer, minimum: 0, maximum: 3 }
+        rationale: { type: string }
+        judgedAt: { type: string, format: date-time }
+    EvaluationQrel:
+      type: object
+      required: [id, queryId, studyId, revision, relevanceGrade, rationale, adjudicatedBy, adjudicatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        queryId: { type: string, format: uuid }
+        studyId: { type: string, format: uuid }
+        revision: { type: integer, minimum: 1 }
+        relevanceGrade: { type: integer, minimum: 0, maximum: 3 }
+        rationale: { type: string }
+        adjudicatedBy: { type: string }
+        adjudicatedAt: { type: string, format: date-time }
+    EvaluationRunRequest:
+      type: object
+      required: [datasetVersionId]
+      properties:
+        datasetVersionId: { type: string, format: uuid }
+    EvaluationRun:
+      type: object
+      required: [id, datasetVersionId, status, comparability, primaryK, cutoffs, repetitions, executionSeed, codeBuild, environmentSha256, runSha256, queuedAt]
+      properties:
+        id: { type: string, format: uuid }
+        datasetVersionId: { type: string, format: uuid }
+        status: { enum: [QUEUED, RUNNING, COMPLETED, PARTIAL, UNAVAILABLE, FAILED] }
+        comparability: { enum: [COMPARABLE, PARTIAL, UNAVAILABLE] }
+        primaryK: { type: integer, example: 5 }
+        cutoffs: { type: array, items: { type: integer }, example: [1, 3, 5, 10] }
+        repetitions: { type: integer, example: 5 }
+        executionSeed: { type: integer, format: int64 }
+        codeBuild: { type: string }
+        environmentSha256: { type: string }
+        runSha256: { type: string }
+        failureReason: { type: [string, 'null'] }
+        queuedAt: { type: string, format: date-time }
+        startedAt: { type: [string, 'null'], format: date-time }
+        completedAt: { type: [string, 'null'], format: date-time }
+    EvaluationAggregateMetric:
+      type: object
+      required: [k, status, eligibleQueries, excludedQueries]
+      properties:
+        k: { type: integer }
+        status: { enum: [AVAILABLE, UNAVAILABLE] }
+        precision: { type: [number, 'null'] }
+        recall: { type: [number, 'null'] }
+        f1: { type: [number, 'null'] }
+        mrr: { type: [number, 'null'] }
+        ndcg: { type: [number, 'null'] }
+        eligibleQueries: { type: integer }
+        excludedQueries: { type: integer }
+    EvaluationQueryMetric:
+      type: object
+      required: [queryId, queryKey, k, status, relevantCount, judgedCount]
+      properties:
+        queryId: { type: string, format: uuid }
+        queryKey: { type: string }
+        k: { type: integer }
+        status: { enum: [AVAILABLE, UNAVAILABLE] }
+        precision: { type: [number, 'null'] }
+        recall: { type: [number, 'null'] }
+        f1: { type: [number, 'null'] }
+        mrr: { type: [number, 'null'] }
+        ndcg: { type: [number, 'null'] }
+        relevantCount: { type: integer }
+        judgedCount: { type: integer }
+    EvaluationRankedHit:
+      type: object
+      required: [queryId, studyId, rank, score]
+      properties:
+        queryId: { type: string, format: uuid }
+        studyId: { type: string, format: uuid }
+        rank: { type: integer, minimum: 1 }
+        score: { type: number }
+    EvaluationResourceUsage:
+      type: object
+      required: [capturedSamples]
+      properties:
+        heapBeforeBytes: { type: [integer, 'null'], format: int64 }
+        heapPeakBytes: { type: [integer, 'null'], format: int64 }
+        heapAfterBytes: { type: [integer, 'null'], format: int64 }
+        processCpuNanos: { type: [integer, 'null'], format: int64 }
+        capturedSamples: { type: integer }
+    EvaluationAlgorithmReport:
+      type: object
+      required: [algorithmRunId, algorithm, version, status, configurationSha256, resourceUsage, aggregateMetrics, queryMetrics, rankedHits]
+      properties:
+        algorithmRunId: { type: string, format: uuid }
+        algorithm: { enum: [LEXICAL_KEYWORD, TF_IDF, SEMANTIC_E5, HYBRID] }
+        version: { type: string }
+        status: { enum: [QUEUED, RUNNING, COMPLETED, PARTIAL, UNAVAILABLE, FAILED] }
+        configurationSha256: { type: string }
+        unavailableReason: { type: [string, 'null'] }
+        indexBuildMillis: { type: [integer, 'null'], format: int64 }
+        latencyP50Millis: { type: [number, 'null'] }
+        latencyP95Millis: { type: [number, 'null'] }
+        resourceUsage: { $ref: '#/components/schemas/EvaluationResourceUsage' }
+        aggregateMetrics: { type: array, items: { $ref: '#/components/schemas/EvaluationAggregateMetric' } }
+        queryMetrics: { type: array, items: { $ref: '#/components/schemas/EvaluationQueryMetric' } }
+        rankedHits: { type: array, items: { $ref: '#/components/schemas/EvaluationRankedHit' } }
+    EvaluationReport:
+      type: object
+      required: [run, dataset, environment, manifest, algorithms, interpretationBoundary]
+      properties:
+        run: { $ref: '#/components/schemas/EvaluationRun' }
+        dataset: { $ref: '#/components/schemas/EvaluationDatasetVersion' }
+        environment: { type: object, additionalProperties: true }
+        manifest: { type: object, additionalProperties: true }
+        algorithms: { type: array, items: { $ref: '#/components/schemas/EvaluationAlgorithmReport' } }
+        interpretationBoundary: { type: string }
+    WarehouseQualitySummary:
+      type: object
+      required: [assessmentStatus, issueCount, bySeverity, byCode]
+      properties:
+        assessmentStatus: { enum: [UNASSESSED, ASSESSED, PARTIAL] }
+        issueCount: { type: integer, minimum: 0 }
+        bySeverity: { type: object, additionalProperties: { type: integer } }
+        byCode: { type: object, additionalProperties: { type: integer } }
+    WarehouseQualityIssue:
+      type: object
+      required: [id, code, severity, message, recordedAt]
+      properties:
+        id: { type: string, format: uuid }
+        studyId: { type: [string, 'null'], format: uuid }
+        code: { type: string }
+        severity: { type: string }
+        field: { type: [string, 'null'] }
+        message: { type: string }
+        recordedAt: { type: string, format: date-time }
+    WarehouseStage:
+      type: object
+      required: [stage, order, status, inputCount, outputCount, detailsJson]
+      properties:
+        stage: { enum: [COLLECT, VALIDATE, CLEAN, TRANSFORM, STORE, ANALYZE] }
+        order: { type: integer, minimum: 1, maximum: 6 }
+        status: { enum: [PENDING, RUNNING, COMPLETED, SKIPPED, FAILED] }
+        inputCount: { type: integer, minimum: 0 }
+        outputCount: { type: integer, minimum: 0 }
+        detailsJson: { type: string, description: Persisted JSON stage evidence serialized as a string by this contract }
+        startedAt: { type: [string, 'null'], format: date-time }
+        completedAt: { type: [string, 'null'], format: date-time }
+    WarehouseLoad:
+      type: object
+      required: [status, assessmentStatus, sourceCount, acceptedCount, rejectedCount, stages, quality]
+      properties:
+        id: { type: [string, 'null'], format: uuid }
+        status: { enum: [UNASSESSED, RUNNING, PUBLISHED, UNCHANGED, FAILED] }
+        currentStage: { type: [string, 'null'], enum: [COLLECT, VALIDATE, CLEAN, TRANSFORM, STORE, ANALYZE, null] }
+        assessmentStatus: { enum: [UNASSESSED, ASSESSED, PARTIAL] }
+        sourceSha256: { type: [string, 'null'] }
+        sourceCount: { type: integer, minimum: 0 }
+        acceptedCount: { type: integer, minimum: 0 }
+        rejectedCount: { type: integer, minimum: 0 }
+        snapshotId: { type: [string, 'null'], format: uuid }
+        sourceCutoffAt: { type: [string, 'null'], format: date-time }
+        startedAt: { type: [string, 'null'], format: date-time }
+        completedAt: { type: [string, 'null'], format: date-time }
+        failureReason: { type: [string, 'null'] }
+        stages: { type: array, items: { $ref: '#/components/schemas/WarehouseStage' } }
+        quality: { $ref: '#/components/schemas/WarehouseQualitySummary' }
+    WarehouseAnalyticsFilters:
+      type: object
+      properties:
+        department: { type: [string, 'null'] }
+        fromYear: { type: [integer, 'null'] }
+        toYear: { type: [integer, 'null'] }
+    WarehouseYearCount:
+      type: object
+      required: [year, studyCount]
+      properties:
+        year: { type: integer }
+        studyCount: { type: integer, minimum: 0 }
+    WarehouseDepartmentCount:
+      type: object
+      required: [departmentCode, departmentName, studyCount]
+      properties:
+        departmentCode: { type: string }
+        departmentName: { type: string }
+        studyCount: { type: integer, minimum: 0 }
+    WarehouseTopicCount:
+      type: object
+      required: [label, termType, studyCount]
+      properties:
+        termId: { type: [string, 'null'], format: uuid }
+        label: { type: string }
+        termType: { type: string }
+        studyCount: { type: integer, minimum: 0 }
+    WarehouseTopicTrend:
+      type: object
+      required: [label, termType, year, studyCount]
+      properties:
+        termId: { type: [string, 'null'], format: uuid }
+        label: { type: string }
+        termType: { type: string }
+        year: { type: integer }
+        studyCount: { type: integer, minimum: 0 }
+    WarehouseAnalytics:
+      type: object
+      required: [assessmentStatus, filters, sourceStudyCount, visibleStudyCount, unavailableYearCount, studiesPerYear, studiesPerDepartment, repeatedTopics, commonResearchAreas, topicTrends, quality]
+      properties:
+        snapshotId: { type: [string, 'null'], format: uuid }
+        asOf: { type: [string, 'null'], format: date-time }
+        assessmentStatus: { enum: [UNASSESSED, ASSESSED] }
+        filters: { $ref: '#/components/schemas/WarehouseAnalyticsFilters' }
+        sourceStudyCount: { type: integer, minimum: 0 }
+        visibleStudyCount: { type: integer, minimum: 0 }
+        unavailableYearCount: { type: integer, minimum: 0 }
+        studiesPerYear: { type: array, items: { $ref: '#/components/schemas/WarehouseYearCount' } }
+        studiesPerDepartment: { type: array, items: { $ref: '#/components/schemas/WarehouseDepartmentCount' } }
+        repeatedTopics: { type: array, items: { $ref: '#/components/schemas/WarehouseTopicCount' } }
+        commonResearchAreas: { type: array, items: { $ref: '#/components/schemas/WarehouseTopicCount' } }
+        topicTrends: { type: array, items: { $ref: '#/components/schemas/WarehouseTopicTrend' } }
+        quality: { $ref: '#/components/schemas/WarehouseQualitySummary' }
+    WarehouseContinuationHistoryItem:
+      type: object
+      required: [factKey, sourceKind]
+      properties:
+        factKey: { type: string }
+        sourceKind: { type: string }
+        sourceStudyId: { type: [string, 'null'], format: uuid }
+        sourceStudyTitle: { type: [string, 'null'] }
+        targetStudyId: { type: [string, 'null'], format: uuid }
+        targetStudyTitle: { type: [string, 'null'] }
+        successorProjectId: { type: [string, 'null'], format: uuid }
+        continuationItemId: { type: [string, 'null'], format: uuid }
+        relationshipType: { type: [string, 'null'] }
+        evidenceStatus: { type: [string, 'null'] }
+        rationale: { type: [string, 'null'] }
+        evidenceAt: { type: [string, 'null'], format: date-time }
+    WarehouseContinuationHistory:
+      type: object
+      required: [assessmentStatus, total, items]
+      properties:
+        snapshotId: { type: [string, 'null'], format: uuid }
+        asOf: { type: [string, 'null'], format: date-time }
+        assessmentStatus: { enum: [UNASSESSED, ASSESSED] }
+        total: { type: integer, minimum: 0, description: Authorized total before the requested result limit }
+        items: { type: array, items: { $ref: '#/components/schemas/WarehouseContinuationHistoryItem' } }
     DiscoveryInput:
       type: object
       required: [title, problemStatement, objectives, stakeholders, siteContext, domainTerms]

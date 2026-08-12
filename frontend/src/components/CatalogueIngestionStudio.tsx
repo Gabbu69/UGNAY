@@ -6,22 +6,17 @@ import {
   ApiProblem,
   getDocumentImportJob,
   importStudyMetadata,
+  publishExtractedStudy,
   uploadStudyDocument,
   type StudyMetadataInput,
 } from '../lib/api'
 
 const terminalStates = new Set(['EXTRACTED', 'CHARACTER_LIMIT_REACHED', 'TIMED_OUT', 'INTERRUPTED', 'FAILED', 'FAILED_STORAGE', 'ORPHAN_REVIEW'])
 
-const currentAcademicYear = () => {
-  const now = new Date()
-  const start = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1
-  return `${start}-${start + 1}`
-}
-
 const emptyMetadata = (): StudyMetadataInput => ({
   institutionalCode: '',
   title: '',
-  academicYear: currentAcademicYear(),
+  academicYear: '',
   abstractText: '',
   problemStatement: '',
   objectives: [],
@@ -30,6 +25,18 @@ const emptyMetadata = (): StudyMetadataInput => ({
   features: '',
   stakeholders: '',
   siteContext: '',
+  department: '',
+  program: '',
+  authors: [],
+  doi: '',
+  repositoryIdentifier: '',
+  dataSources: '',
+  technology: '',
+  intendedUsers: '',
+  resultsText: '',
+  researchAreas: [],
+  visibility: 'RESTRICTED',
+  lifecycleStatus: 'INCOMPLETE',
 })
 
 function messageFor(error: unknown) {
@@ -47,9 +54,12 @@ export function CatalogueIngestionStudio({ open, onOpenChange }: {
   const [metadata, setMetadata] = useState(emptyMetadata)
   const [objectiveText, setObjectiveText] = useState('')
   const [keywordText, setKeywordText] = useState('')
+  const [authorText, setAuthorText] = useState('')
+  const [researchAreaText, setResearchAreaText] = useState('')
   const [file, setFile] = useState<File>()
   const [jobId, setJobId] = useState('')
   const [metadataRecorded, setMetadataRecorded] = useState('')
+  const [publicationJobId, setPublicationJobId] = useState('')
 
   const metadataMutation = useMutation({
     mutationFn: importStudyMetadata,
@@ -58,7 +68,24 @@ export function CatalogueIngestionStudio({ open, onOpenChange }: {
       setMetadata(emptyMetadata())
       setObjectiveText('')
       setKeywordText('')
+      setAuthorText('')
+      setResearchAreaText('')
       await queryClient.invalidateQueries({ queryKey: ['workspace'] })
+      await queryClient.invalidateQueries({ queryKey: ['catalogue-search'] })
+    },
+  })
+  const publishMutation = useMutation({
+    mutationFn: (input: StudyMetadataInput) => publishExtractedStudy(publicationJobId, input),
+    onSuccess: async (_, recorded) => {
+      setMetadataRecorded(recorded.title)
+      setMetadata(emptyMetadata())
+      setObjectiveText('')
+      setKeywordText('')
+      setAuthorText('')
+      setResearchAreaText('')
+      setPublicationJobId('')
+      await queryClient.invalidateQueries({ queryKey: ['workspace'] })
+      await queryClient.invalidateQueries({ queryKey: ['catalogue-search'] })
     },
   })
   const uploadMutation = useMutation({
@@ -77,7 +104,11 @@ export function CatalogueIngestionStudio({ open, onOpenChange }: {
     setMetadataRecorded('')
     const objectives = objectiveText.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
     const keywords = keywordText.split(/[,\r\n]/).map((value) => value.trim()).filter(Boolean)
-    await metadataMutation.mutateAsync({ ...metadata, objectives, keywords }).catch(() => undefined)
+    const authors = authorText.split(/[,\r\n]/).map((value) => value.trim()).filter(Boolean)
+    const researchAreas = researchAreaText.split(/[,\r\n]/).map((value) => value.trim()).filter(Boolean)
+    const reviewed = { ...metadata, objectives, keywords, authors, researchAreas }
+    if (publicationJobId) await publishMutation.mutateAsync(reviewed).catch(() => undefined)
+    else await metadataMutation.mutateAsync(reviewed).catch(() => undefined)
   }
   const submitDocument = async (event: FormEvent) => {
     event.preventDefault()
@@ -88,6 +119,8 @@ export function CatalogueIngestionStudio({ open, onOpenChange }: {
   const job = jobQuery.data
   const jobTerminal = terminalStates.has(job?.status ?? '')
   const jobSuccessful = job?.status === 'EXTRACTED' && job.publicationEligible
+  const recording = metadataMutation.isPending || publishMutation.isPending
+  const recordError = metadataMutation.error ?? publishMutation.error
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -106,22 +139,37 @@ export function CatalogueIngestionStudio({ open, onOpenChange }: {
           <div className="ingestion-principle"><LockKeyhole size={18} /><div><strong>Private by default</strong><span>PDFs are signature-checked, scanned, hashed, and stored under a randomized key before bounded extraction begins.</span></div></div>
 
           <div className="authoring-tabs ingestion-tabs" role="tablist" aria-label="Catalogue evidence type">
-            <button type="button" role="tab" aria-selected={mode === 'metadata'} className={mode === 'metadata' ? 'is-active' : ''} onClick={() => setMode('metadata')}><BookOpenCheck size={15} />Study metadata</button>
+            <button type="button" role="tab" aria-selected={mode === 'metadata'} className={mode === 'metadata' ? 'is-active' : ''} onClick={() => { setMode('metadata'); setPublicationJobId('') }}><BookOpenCheck size={15} />Study metadata</button>
             <button type="button" role="tab" aria-selected={mode === 'document'} className={mode === 'document' ? 'is-active' : ''} onClick={() => setMode('document')}><FileUp size={15} />Source PDF</button>
           </div>
 
           {mode === 'metadata' ? (
             <form className="authoring-form ingestion-form" onSubmit={submitMetadata} aria-label="Import reviewed study metadata">
-              <div className="authoring-form-intro"><span>01 / REVIEWED RECORD</span><p>Record the fields used by discovery and route analysis. Separate lines preserve objective boundaries.</p></div>
+              <div className="authoring-form-intro"><span>01 / REVIEWED RECORD</span><p>{publicationJobId ? `Publish reviewed metadata and link immutable extraction job ${publicationJobId.slice(0, 8)}. Nothing extracted is published automatically.` : 'Record the fields used by discovery and route analysis. Separate lines preserve objective boundaries.'}</p></div>
+              {publicationJobId ? <div className="baseline-preview"><FileText size={17} /><div><strong>Linking a reviewed source PDF</strong><span>Publication remains a curator action; enter only evidence verified from the document.</span></div></div> : null}
               <div className="authoring-form-row">
                 <label><span>Institutional code</span><input value={metadata.institutionalCode} onChange={(event) => setMetadata((value) => ({ ...value, institutionalCode: event.target.value }))} maxLength={80} placeholder="CIS-2025-018" required /></label>
-                <label><span>Academic year</span><input value={metadata.academicYear} onChange={(event) => setMetadata((value) => ({ ...value, academicYear: event.target.value }))} maxLength={24} placeholder="2025-2026" required /></label>
+                <label><span>Academic year</span><input value={metadata.academicYear} onChange={(event) => setMetadata((value) => ({ ...value, academicYear: event.target.value }))} maxLength={24} placeholder="2025-2026 (leave blank if unavailable)" /></label>
+              </div>
+              <div className="authoring-form-row">
+                <label><span>Department code or name</span><input value={metadata.department ?? ''} onChange={(event) => setMetadata((value) => ({ ...value, department: event.target.value }))} maxLength={160} placeholder="CICS" /></label>
+                <label><span>Program {publicationJobId ? '' : '· optional'}</span><input value={metadata.program ?? ''} onChange={(event) => setMetadata((value) => ({ ...value, program: event.target.value }))} maxLength={180} required={Boolean(publicationJobId)} /></label>
+              </div>
+              <div className="authoring-form-row">
+                <label><span>Lifecycle status</span><select value={metadata.lifecycleStatus} onChange={(event) => setMetadata((value) => ({ ...value, lifecycleStatus: event.target.value as StudyMetadataInput['lifecycleStatus'] }))}><option value="PUBLISHED">Published</option><option value="COMPLETED">Completed</option><option value="INCOMPLETE">Incomplete</option><option value="SUSPENDED">Suspended</option><option value="ARCHIVED">Archived</option></select></label>
+                <label><span>Visibility</span><select value={metadata.visibility} onChange={(event) => setMetadata((value) => ({ ...value, visibility: event.target.value as StudyMetadataInput['visibility'] }))}><option value="CAMPUS">Campus</option><option value="PUBLIC">Public</option><option value="RESTRICTED">Restricted</option><option value="EMBARGOED">Embargoed</option></select></label>
               </div>
               <label><span>Study title</span><input value={metadata.title} onChange={(event) => setMetadata((value) => ({ ...value, title: event.target.value }))} maxLength={500} required /></label>
+              <label><span>Authors · comma or line separated {publicationJobId ? '' : '· optional'}</span><textarea value={authorText} onChange={(event) => setAuthorText(event.target.value)} rows={2} required={Boolean(publicationJobId)} /></label>
+              <div className="authoring-form-row">
+                <label><span>DOI · optional</span><input value={metadata.doi ?? ''} onChange={(event) => setMetadata((value) => ({ ...value, doi: event.target.value }))} maxLength={255} /></label>
+                <label><span>Repository identifier · optional</span><input value={metadata.repositoryIdentifier ?? ''} onChange={(event) => setMetadata((value) => ({ ...value, repositoryIdentifier: event.target.value }))} maxLength={255} /></label>
+              </div>
               <label><span>Abstract</span><textarea value={metadata.abstractText} onChange={(event) => setMetadata((value) => ({ ...value, abstractText: event.target.value }))} rows={4} required /></label>
               <label><span>Problem statement</span><textarea value={metadata.problemStatement} onChange={(event) => setMetadata((value) => ({ ...value, problemStatement: event.target.value }))} rows={4} required /></label>
               <label><span>Objectives · one per line</span><textarea value={objectiveText} onChange={(event) => setObjectiveText(event.target.value)} rows={4} placeholder={'Measure…\nDesign…\nEvaluate…'} required /></label>
               <label><span>Controlled keywords · comma separated</span><input value={keywordText} onChange={(event) => setKeywordText(event.target.value)} placeholder="flood, offline, barangay response" required /></label>
+              <label><span>Curator-reviewed research areas · comma separated · optional</span><input value={researchAreaText} onChange={(event) => setResearchAreaText(event.target.value)} placeholder="Disaster informatics, Offline systems" /></label>
               <div className="authoring-form-row">
                 <label><span>Methodology</span><textarea value={metadata.methodology} onChange={(event) => setMetadata((value) => ({ ...value, methodology: event.target.value }))} rows={3} required /></label>
                 <label><span>Features / deliverables</span><textarea value={metadata.features} onChange={(event) => setMetadata((value) => ({ ...value, features: event.target.value }))} rows={3} required /></label>
@@ -130,9 +178,15 @@ export function CatalogueIngestionStudio({ open, onOpenChange }: {
                 <label><span>Stakeholders and intended users</span><textarea value={metadata.stakeholders} onChange={(event) => setMetadata((value) => ({ ...value, stakeholders: event.target.value }))} rows={3} required /></label>
                 <label><span>Site and operating context</span><textarea value={metadata.siteContext} onChange={(event) => setMetadata((value) => ({ ...value, siteContext: event.target.value }))} rows={3} required /></label>
               </div>
-              <button className="button button-primary authoring-submit" disabled={metadataMutation.isPending}>{metadataMutation.isPending ? <LoaderCircle className="is-spinning" size={15} /> : <Database size={15} />}{metadataMutation.isPending ? 'Recording reviewed study…' : 'Record reviewed study'}<ArrowRight size={15} /></button>
-              {metadataMutation.isError ? <p className="ingestion-inline-error" role="alert"><AlertTriangle size={15} />{messageFor(metadataMutation.error)}</p> : null}
-              {metadataRecorded ? <div className="authoring-confirmed ingestion-confirmed" role="status"><CheckCircle2 size={18} /><div><strong>Catalogue record persisted</strong><span>{metadataRecorded} is now discoverable in the live Research Atlas. A source PDF may be uploaded separately.</span></div></div> : null}
+              <div className="authoring-form-row">
+                <label><span>Data sources · optional</span><textarea value={metadata.dataSources ?? ''} onChange={(event) => setMetadata((value) => ({ ...value, dataSources: event.target.value }))} rows={3} /></label>
+                <label><span>Technology · optional</span><textarea value={metadata.technology ?? ''} onChange={(event) => setMetadata((value) => ({ ...value, technology: event.target.value }))} rows={3} /></label>
+              </div>
+              <label><span>Intended users · optional</span><textarea value={metadata.intendedUsers ?? ''} onChange={(event) => setMetadata((value) => ({ ...value, intendedUsers: event.target.value }))} rows={2} /></label>
+              <label><span>Results / findings · optional; never inferred</span><textarea value={metadata.resultsText ?? ''} onChange={(event) => setMetadata((value) => ({ ...value, resultsText: event.target.value }))} rows={4} /></label>
+              <button className="button button-primary authoring-submit" disabled={recording}>{recording ? <LoaderCircle className="is-spinning" size={15} /> : <Database size={15} />}{recording ? 'Recording reviewed study…' : publicationJobId ? 'Publish and link reviewed study' : 'Record reviewed study'}<ArrowRight size={15} /></button>
+              {recordError ? <p className="ingestion-inline-error" role="alert"><AlertTriangle size={15} />{messageFor(recordError)}</p> : null}
+              {metadataRecorded ? <div className="authoring-confirmed ingestion-confirmed" role="status"><CheckCircle2 size={18} /><div><strong>Catalogue record persisted</strong><span>{metadataRecorded} is now discoverable in the live Research Atlas; any selected source PDF remains linked as immutable evidence.</span></div></div> : null}
             </form>
           ) : (
             <form className="authoring-form ingestion-form" onSubmit={submitDocument} aria-label="Upload private study PDF">
@@ -151,7 +205,7 @@ export function CatalogueIngestionStudio({ open, onOpenChange }: {
                 <progress max="100" value={job?.progressPercent ?? 0}>{job?.progressPercent ?? 0}%</progress>
                 <div className="ingestion-job-metrics"><span><b>{job?.progressPercent ?? 0}%</b> progress</span><span><b>{job?.pageCount ?? 0}</b> pages</span><span><b>{job?.extractedCharacterCount ?? 0}</b> characters</span></div>
                 {jobQuery.isError ? <p className="ingestion-inline-error" role="alert"><AlertTriangle size={15} />{messageFor(jobQuery.error)}</p> : null}
-                {job && jobTerminal ? <div className={jobSuccessful ? 'ingestion-outcome is-ready' : 'ingestion-outcome is-review'}>{jobSuccessful ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}<div><strong>{jobSuccessful ? 'Extraction ready for curator publication review' : 'Manual curator review required'}</strong><span>{job.failureReason ?? (jobSuccessful ? 'Bounded text extraction finished. Publication remains a separate human decision.' : 'This source was preserved but cannot enter search automatically.')}</span></div></div> : <p className="ingestion-polling"><LoaderCircle className="is-spinning" size={14} />Polling the durable status record. Closing this panel does not cancel the job.</p>}
+                {job && jobTerminal ? <><div className={jobSuccessful ? 'ingestion-outcome is-ready' : 'ingestion-outcome is-review'}>{jobSuccessful ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}<div><strong>{jobSuccessful ? 'Extraction ready for curator publication review' : 'Manual curator review required'}</strong><span>{job.failureReason ?? (jobSuccessful ? 'Bounded text extraction finished. Publication remains a separate human decision.' : 'This source was preserved but cannot enter search automatically.')}</span></div></div>{jobSuccessful ? <button type="button" className="button button-dark full-width ingestion-review-button" onClick={() => { setPublicationJobId(job.jobId); setMode('metadata'); setMetadataRecorded('') }}><BookOpenCheck size={15} />Review metadata and link this PDF<ArrowRight size={15} /></button> : null}</> : <p className="ingestion-polling"><LoaderCircle className="is-spinning" size={14} />Polling the durable status record. Closing this panel does not cancel the job.</p>}
               </section> : null}
             </form>
           )}

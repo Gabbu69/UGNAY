@@ -57,6 +57,36 @@ Similarity bands are weak below 45, related at 45–64, strong overlap at 65–7
 
 Sparse inputs lower confidence and may return `REVIEW_REQUIRED`; missing data cannot be treated as evidence of similarity or novelty.
 
+## Retrieval evaluation rules
+
+Production route discovery and research evaluation are related but separate. The evaluation suite compares retrieval quality only and cannot call a route-decision mutation.
+
+The four frozen arms are:
+
+| Version | Rule |
+|---|---|
+| `LEXICAL_KEYWORD_V1` | Distinct normalized query-token coverage |
+| `TF_IDF_COSINE_V1` | Raw term frequency, corpus IDF `ln((N+1)/(df+1))+1`, cosine similarity |
+| `SEMANTIC_E5_V1` | Cosine over local multilingual E5 embeddings |
+| `HYBRID_V1_1` | 50% semantic + 35% TF-IDF + 15% controlled-concept evidence with the production field weights above |
+
+Every arm receives the same frozen corpus items, structured query snapshots, qrels, cutoffs, and deterministic UUID tie-break. Exact-title/identifier priority signals are excluded from this pure comparison so they do not confound retrieval results.
+
+Relevant means adjudicated grade at least 1 on the 0-3 scale. At K 1, 3, 5, and 10, calculate Precision, Recall, F1, MRR, and graded NDCG; K=5 is primary. NDCG gain is `2^grade - 1`. Unjudged retrieved studies count as non-relevant. Macro averages include eligible queries and report exclusions explicitly. An unavailable metric is null with status `UNAVAILABLE`, never a substituted zero.
+
+Run one unmeasured warm-up and five measured repetitions. Report index/profile build separately; retain p50/p95 query latency and supported process-CPU/heap evidence with the environment, build, model/provider, algorithm-configuration, corpus, query, qrel, dataset, and run hashes. Semantic absence makes its arm `UNAVAILABLE` and hybrid `PARTIAL`; weights are not rescaled and the suite is not `COMPARABLE`.
+
+Recall@5 >= 0.85, NDCG@5 >= 0.75, and possible-duplicate false-positive rate <= 10% are acceptance targets, not current findings. The first two require a real frozen institutional retrieval dataset. Duplicate false-positive rate is a separate human-adjudicated route-classification measure and is not derived from qrels.
+
+## Query and warehouse evidence rules
+
+- UGNAY RQL retrieves `THESIS` or `RELATED` evidence only. Its lexer/parser/semantic/interpreter result never becomes an approval, rejection, plagiarism finding, or route disposition.
+- `SIMILARITY` is permitted only for `RELATED` and ranges from 0 through 100. A related query requires an authorized proposal, thesis, or literal-text target.
+- A `RESEARCH_AREA` predicate must use an active curated taxonomy term. Interpreter execution and warehouse analysis do not infer missing research areas.
+- Historical year analytics use only a strict four-digit year or consecutive `YYYY-YYYY` academic-year range within 1900-2200. Invalid/missing values remain unavailable and raise quality evidence.
+- Repeated topics mean active topic/keyword terms present in at least two distinct authorized studies. Common research areas mean explicit active `RESEARCH_AREA` assignments. Topic trends are observed counts only; no forecast is generated.
+- A failed warehouse load cannot replace the latest published snapshot. When no snapshot exists, analytics are `UNASSESSED`; RQL explicitly reports that it used the live authoritative catalogue.
+
 ## Route recommendation
 
 Apply gates in this order:
