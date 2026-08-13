@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, Check, CircleDashed, FileArchive, GitBranch, KeyRound, PackageCheck, PenLine } from 'lucide-react'
 import { useWorkspace } from '../hooks/useWorkspace'
 import { useAuthSession } from '../hooks/useAuthSession'
-import { ApiProblem, assessProjectCompletion, claimContinuationItem, getCompletionPackage, getContinuationItems, getProjectTraceability } from '../lib/api'
+import { ApiProblem, assessProjectCompletion, claimContinuationItem, getCompletionEvidenceReferences, getCompletionPackage, getContinuationItems, getProjectTraceability } from '../lib/api'
 import { PageHeader, ScoreRing, StatusPill } from '../components/Primitives'
 import { CompletionEvidenceStudio } from '../components/CompletionEvidenceStudio'
 
@@ -20,7 +20,8 @@ export default function ContinuityExplorer() {
   const [successorObjectiveId, setSuccessorObjectiveId] = useState('')
   const [claimRationale, setClaimRationale] = useState('')
   const packageQuery = useQuery({ queryKey: ['completion-package', project?.id], queryFn: () => getCompletionPackage(project?.id ?? ''), enabled: data?.source === 'LIVE' && project?.id !== 'unavailable' })
-  const opportunityQuery = useQuery({ queryKey: ['continuation-items'], queryFn: getContinuationItems, enabled: data?.source === 'LIVE' })
+  const referencesQuery = useQuery({ queryKey: ['completion-evidence-references', project?.id], queryFn: () => getCompletionEvidenceReferences(project?.id ?? ''), enabled: data?.source === 'LIVE' && project?.id !== 'unavailable' })
+  const opportunityQuery = useQuery({ queryKey: ['continuation-items', project?.id], queryFn: () => getContinuationItems(project?.id ?? ''), enabled: data?.source === 'LIVE' && project?.id !== 'unavailable' })
   const traceQuery = useQuery({ queryKey: ['traceability', project?.id], queryFn: () => getProjectTraceability(project?.id ?? ''), enabled: data?.source === 'LIVE' && project?.id !== 'unavailable' })
   const pack = packageQuery.data
   const objectives = traceQuery.data?.items.filter((item) => item.type === 'OBJECTIVE' && item.lifecycleStatus !== 'OBSOLETE') ?? []
@@ -33,7 +34,7 @@ export default function ContinuityExplorer() {
     onSuccess: () => {
       setMessage('Continuation item claimed without modifying predecessor history.')
       setClaimingItemId(''); setSuccessorObjectiveId(''); setClaimRationale('')
-      queryClient.invalidateQueries({ queryKey: ['continuation-items'] })
+      queryClient.invalidateQueries({ queryKey: ['continuation-items', project?.id] })
     },
   })
   const error = completion.error instanceof ApiProblem ? completion.error.detail : completion.error?.message
@@ -53,13 +54,13 @@ export default function ContinuityExplorer() {
       </section>
 
       <div className="continuity-grid">
-        <section className="readiness-panel paper-panel"><div className="section-heading compact"><div><span>HANDOFF READINESS</span><h2>Can another team continue?</h2></div><ScoreRing score={Math.round(pack?.readinessScore ?? 0)} label={pack?.status ?? 'UNASSESSED'} size="large" /></div>
-          <div className="readiness-list">{pack?.criteria.length ? pack.criteria.map((item) => <div key={item.key}><div><span>{item.label}</span><strong>{Math.round(item.completion * item.weight)}/{item.weight}</strong></div><i><b style={{ width: `${item.completion * 100}%` }} /></i><small>{item.explanation}</small></div>) : <p>No structured package evidence is available.</p>}</div>
-          {!pack?.codeDataRightsConfirmed ? <div className="rights-gate"><KeyRound size={18} /><div><strong>Rights confirmation blocks Ready</strong><p>Repository or data continuation rights have not been confirmed.</p></div></div> : null}
+        <section className="readiness-panel paper-panel"><div className="section-heading compact"><div><span>HANDOFF READINESS</span><h2>Can another team continue?</h2></div><ScoreRing score={pack?.readinessScore == null ? null : Math.round(pack.readinessScore)} label={pack?.readinessState ?? 'UNAVAILABLE'} size="large" /></div>
+          <div className="readiness-list">{pack?.criteria.length ? pack.criteria.map((item) => { const criterionValue = item.value; const hasValue = criterionValue != null; return <div key={item.key}><div><span>{item.label}</span><strong>{hasValue ? `${Math.round(criterionValue * item.weight)}/${item.weight}` : item.state}</strong></div>{hasValue ? <i role="meter" aria-label={`${item.label}: ${Math.round(criterionValue * 100)}%`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(criterionValue * 100)}><b style={{ width: `${criterionValue * 100}%` }} /></i> : null}<small>{item.explanation || 'Assessment explanation unavailable.'}</small>{item.source ? <small>Source: {item.source}</small> : null}</div> }) : <p>UNASSESSED · No server-derived package criteria are available.</p>}</div>
+          {!pack?.codeDataRightsConfirmed ? <div className="rights-gate"><KeyRound size={18} /><div><strong>Rights evidence is {pack?.readinessState === 'UNAVAILABLE' ? 'unavailable' : 'not verified'}</strong><p>Readiness remains honest until an independent verification record confirms repository and data access.</p></div></div> : null}
         </section>
 
         <aside className="package-panel paper-panel" aria-label="Continuity package readiness"><span className="panel-overline">CONTINUITY PACKAGE - {pack?.status ?? 'UNASSESSED'}</span><h2>Preserved evidence</h2>
-          <div className="package-list"><div><GitBranch size={17} /><p><b>Source repository</b><small>{pack?.repositoryUrl || 'Not recorded'} {pack?.commitHash ? `- ${pack.commitHash}` : ''}</small></p><StatusPill tone={pack?.repositoryUrl ? 'teal' : 'coral'}>{pack?.repositoryUrl ? 'Recorded' : 'Missing'}</StatusPill></div><div><FileArchive size={17} /><p><b>Setup instructions</b><small>{pack?.setupInstructions || 'Not recorded'}</small></p><StatusPill tone={pack?.setupInstructions ? 'teal' : 'coral'}>{pack?.setupInstructions ? 'Recorded' : 'Missing'}</StatusPill></div><div><PackageCheck size={17} /><p><b>Known limitations</b><small>{pack?.limitations.length ?? 0} structured records</small></p><StatusPill tone={(pack?.limitations.length ?? 0) > 0 ? 'teal' : 'amber'}>{pack?.limitations.length ?? 0}</StatusPill></div></div>
+          <div className="package-list"><div><GitBranch size={17} /><p><b>Source repository</b><small>{pack?.repositoryUrl || 'UNASSESSED · Not recorded'} {pack?.commitHash ? `- ${pack.commitHash}` : ''}</small></p><StatusPill tone={pack?.repositoryUrl ? 'teal' : 'amber'}>{pack?.repositoryUrl ? 'Recorded' : 'UNASSESSED'}</StatusPill></div><div><FileArchive size={17} /><p><b>Setup instructions</b><small>{pack?.setupInstructions || 'UNASSESSED · Not recorded'}</small></p><StatusPill tone={pack?.setupInstructions ? 'teal' : 'amber'}>{pack?.setupInstructions ? 'Recorded' : 'UNASSESSED'}</StatusPill></div><div><PackageCheck size={17} /><p><b>Known limitations</b><small>{pack ? `${pack.limitations.length} structured records` : 'UNAVAILABLE'}</small></p><StatusPill tone={(pack?.limitations.length ?? 0) > 0 ? 'teal' : 'amber'}>{pack ? pack.limitations.length : 'UNAVAILABLE'}</StatusPill></div><div><FileArchive size={17} /><p><b>Evidence references</b><small>{referencesQuery.isError ? 'UNAVAILABLE' : referencesQuery.data?.length ? `${referencesQuery.data.length} persisted records` : 'UNASSESSED · No references'}</small></p><StatusPill tone={referencesQuery.data?.length ? 'teal' : 'amber'}>{referencesQuery.isError ? 'UNAVAILABLE' : referencesQuery.data?.length ?? 'UNASSESSED'}</StatusPill></div></div>
           <button className="button button-secondary full-width" disabled={!canAuthor} onClick={() => setEvidenceOpen(true)}><PenLine size={15} /> Edit structured handoff</button>
         </aside>
       </div>

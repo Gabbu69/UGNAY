@@ -1,5 +1,6 @@
 package com.ugnay.platform.workspace;
 
+import com.ugnay.platform.shared.PlatformModels.AssessmentStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,7 +20,7 @@ public class RoutingEvidenceRepository {
     }
 
     @Transactional
-    public ContinuationAssessment saveContinuation(UUID proposalId, UUID predecessorId,
+    public synchronized ContinuationAssessment saveContinuation(UUID proposalId, UUID predecessorId,
             List<ObjectiveLink> links, boolean codeAccess, boolean dataAccess, String accessNotes, String actorEmail) {
         byte[] actor = actorId(actorEmail);
         byte[] proposal = bytes(proposalId);
@@ -29,20 +30,28 @@ public class RoutingEvidenceRepository {
         if (validPredecessor == null || validPredecessor == 0) {
             throw new IllegalArgumentException("Continuation evidence requires an incomplete or suspended predecessor.");
         }
-        jdbc.update("DELETE FROM proposal_objective_continuation_links WHERE proposal_id=?", proposal);
-        for (ObjectiveLink link : links == null ? List.<ObjectiveLink>of() : links) {
+        List<ObjectiveLink> submittedLinks = links == null ? List.of() : List.copyOf(links);
+        for (ObjectiveLink link : submittedLinks) {
             Integer valid = jdbc.queryForObject("SELECT COUNT(*) FROM proposal_objectives o JOIN continuation_items c ON c.id=? AND c.study_id=? AND c.item_status='OPEN' WHERE o.id=? AND o.proposal_id=?",
                     Integer.class, bytes(link.continuationItemId()), predecessor, bytes(link.proposalObjectiveId()), proposal);
             if (valid == null || valid == 0) throw new IllegalArgumentException("Every objective mapping must join this proposal to an open predecessor item.");
-            jdbc.update("INSERT INTO proposal_objective_continuation_links(proposal_id, proposal_objective_id, continuation_item_id, rationale) VALUES(?,?,?,?)",
-                    proposal, bytes(link.proposalObjectiveId()), bytes(link.continuationItemId()), required(link.rationale(), "Objective mapping rationale"));
         }
-        if (exists("proposal_continuation_evidence", proposal)) {
-            jdbc.update("UPDATE proposal_continuation_evidence SET predecessor_study_id=?, code_access_confirmed=?, data_access_confirmed=?, access_notes=?, recorded_by=?, row_version=row_version+1, recorded_at=? WHERE proposal_id=?",
-                    predecessor, codeAccess, dataAccess, required(accessNotes, "Access notes"), actor, Timestamp.from(Instant.now()), proposal);
-        } else {
-            jdbc.update("INSERT INTO proposal_continuation_evidence(proposal_id, predecessor_study_id, code_access_confirmed, data_access_confirmed, access_notes, recorded_by, row_version, recorded_at) VALUES(?,?,?,?,?,?,?,?)",
-                    proposal, predecessor, codeAccess, dataAccess, required(accessNotes, "Access notes"), actor, 0, Timestamp.from(Instant.now()));
+
+        // Lock the proposal row so two submissions cannot allocate the same
+        // proposal-scoped revision number.
+        jdbc.queryForObject("SELECT id FROM proposals WHERE id=? FOR UPDATE", byte[].class, proposal);
+        Long latestRevision = jdbc.queryForObject("SELECT MAX(revision_number) FROM proposal_continuation_revisions WHERE proposal_id=?",
+                Long.class, proposal);
+        long revisionNumber = latestRevision == null ? 1 : latestRevision + 1;
+        UUID revisionId = UUID.randomUUID();
+        Instant now = Instant.now();
+        jdbc.update("INSERT INTO proposal_continuation_revisions(id, proposal_id, predecessor_study_id, revision_number, code_access_confirmed, data_access_confirmed, access_notes, recorded_by, recorded_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                bytes(revisionId), proposal, predecessor, revisionNumber, codeAccess, dataAccess,
+                required(accessNotes, "Access notes"), actor, Timestamp.from(now));
+        for (ObjectiveLink link : submittedLinks) {
+            jdbc.update("INSERT INTO proposal_continuation_revision_links(revision_id, proposal_objective_id, continuation_item_id, rationale) VALUES(?,?,?,?)",
+                    bytes(revisionId), bytes(link.proposalObjectiveId()), bytes(link.continuationItemId()),
+                    required(link.rationale(), "Objective mapping rationale"));
         }
         return continuationAssessment(proposalId, predecessorId);
     }
@@ -67,31 +76,35 @@ public class RoutingEvidenceRepository {
         ContinuationAssessment continuation = continuationAssessment(proposalId, predecessorId);
         int improvements = jdbc.queryForObject("SELECT COUNT(*) FROM proposal_improvement_claims WHERE proposal_id=? AND predecessor_study_id=?",
                 Integer.class, bytes(proposalId), bytes(predecessorId));
-        return new RouteAssessment(continuation.ready(), continuation.objectiveCoverage(), continuation.codeAccessConfirmed(),
-                continuation.dataAccessConfirmed(), improvements > 0, improvements);
+        AssessmentStatus improvementState = improvements > 0 ? AssessmentStatus.ASSESSED : AssessmentStatus.UNASSESSED;
+        return new RouteAssessment(continuation.state(), continuation.objectiveCoverage(), continuation.codeAccessConfirmed(),
+                continuation.dataAccessConfirmed(), improvementState, improvements > 0 ? improvements : null);
     }
 
     public ContinuationAssessment continuationAssessment(UUID proposalId, UUID predecessorId) {
-        int objectives = jdbc.queryForObject("SELECT COUNT(*) FROM proposal_objectives WHERE proposal_id=?", Integer.class, bytes(proposalId));
-        int mapped = jdbc.queryForObject("SELECT COUNT(DISTINCT proposal_objective_id) FROM proposal_objective_continuation_links WHERE proposal_id=?",
-                Integer.class, bytes(proposalId));
-        List<ContinuationRow> rows = jdbc.query("SELECT code_access_confirmed, data_access_confirmed, access_notes, row_version, recorded_at FROM proposal_continuation_evidence WHERE proposal_id=? AND predecessor_study_id=?",
-                (result, index) -> new ContinuationRow(result.getBoolean(1), result.getBoolean(2), result.getString(3), result.getLong(4), result.getTimestamp(5).toInstant()),
+        List<ContinuationRow> rows = jdbc.query("SELECT id, code_access_confirmed, data_access_confirmed, access_notes, revision_number, recorded_at FROM proposal_continuation_revisions WHERE proposal_id=? AND predecessor_study_id=? ORDER BY revision_number DESC LIMIT 1",
+                (result, index) -> new ContinuationRow(result.getBytes(1), result.getBoolean(2), result.getBoolean(3),
+                        result.getString(4), result.getLong(5), result.getTimestamp(6).toInstant()),
                 bytes(proposalId), bytes(predecessorId));
-        double coverage = objectives == 0 ? 0 : mapped * 100.0 / objectives;
-        if (rows.isEmpty()) return new ContinuationAssessment(proposalId, predecessorId, coverage, false, false, "", 0, null, false);
+        if (rows.isEmpty()) {
+            return new ContinuationAssessment(proposalId, predecessorId, AssessmentStatus.UNASSESSED,
+                    null, null, null, null, null, null, false);
+        }
         ContinuationRow row = rows.getFirst();
-        return new ContinuationAssessment(proposalId, predecessorId, coverage, row.code(), row.data(), row.notes(), row.version(), row.at(),
-                coverage >= 60 && row.code() && row.data());
+        int objectives = jdbc.queryForObject("SELECT COUNT(*) FROM proposal_objectives WHERE proposal_id=?",
+                Integer.class, bytes(proposalId));
+        int mapped = jdbc.queryForObject("SELECT COUNT(DISTINCT proposal_objective_id) FROM proposal_continuation_revision_links WHERE revision_id=?",
+                Integer.class, row.id());
+        Double coverage = objectives == 0 ? null : mapped * 100.0 / objectives;
+        AssessmentStatus state = coverage == null ? AssessmentStatus.PARTIAL : AssessmentStatus.ASSESSED;
+        boolean ready = state == AssessmentStatus.ASSESSED && coverage >= 60 && row.code() && row.data();
+        return new ContinuationAssessment(proposalId, predecessorId, state, coverage, row.code(), row.data(),
+                row.notes(), row.revision(), row.at(), ready);
     }
 
     private byte[] actorId(String email) {
         if (email == null || email.isBlank()) return jdbc.queryForObject("SELECT id FROM user_accounts ORDER BY created_at LIMIT 1", byte[].class);
         return jdbc.queryForObject("SELECT id FROM user_accounts WHERE LOWER(email)=LOWER(?)", byte[].class, email);
-    }
-
-    private boolean exists(String table, byte[] id) {
-        return jdbc.queryForObject("SELECT COUNT(*) FROM " + table + " WHERE proposal_id=?", Integer.class, id) > 0;
     }
 
     private static String required(String value, String label) {
@@ -101,12 +114,22 @@ public class RoutingEvidenceRepository {
     static byte[] bytes(UUID id) { return ByteBuffer.allocate(16).putLong(id.getMostSignificantBits()).putLong(id.getLeastSignificantBits()).array(); }
 
     public record ObjectiveLink(UUID proposalObjectiveId, UUID continuationItemId, String rationale) {}
-    public record ContinuationAssessment(UUID proposalId, UUID predecessorStudyId, double objectiveCoverage,
-            boolean codeAccessConfirmed, boolean dataAccessConfirmed, String accessNotes, long rowVersion,
+    public record ContinuationAssessment(UUID proposalId, UUID predecessorStudyId, AssessmentStatus state,
+            Double objectiveCoverage, Boolean codeAccessConfirmed, Boolean dataAccessConfirmed, String accessNotes, Long revisionNumber,
             Instant recordedAt, boolean ready) {}
     public record ImprovementClaim(UUID id, UUID proposalId, UUID predecessorStudyId, UUID continuationItemId,
             String claim, String baseline, String target, String evaluationMethod, String recordedBy, Instant recordedAt) {}
-    public record RouteAssessment(boolean continuationReady, double continuationCoverage, boolean codeAccess,
-            boolean dataAccess, boolean improvementReady, int improvementClaimCount) {}
-    private record ContinuationRow(boolean code, boolean data, String notes, long version, Instant at) {}
+    public record RouteAssessment(AssessmentStatus continuationState, Double continuationCoverage, Boolean codeAccess,
+            Boolean dataAccess, AssessmentStatus improvementState, Integer improvementClaimCount) {
+        public boolean continuationReady() {
+            return continuationState == AssessmentStatus.ASSESSED && continuationCoverage != null
+                    && continuationCoverage >= 60 && Boolean.TRUE.equals(codeAccess) && Boolean.TRUE.equals(dataAccess);
+        }
+
+        public boolean improvementReady() {
+            return improvementState == AssessmentStatus.ASSESSED && improvementClaimCount != null
+                    && improvementClaimCount > 0;
+        }
+    }
+    private record ContinuationRow(byte[] id, boolean code, boolean data, String notes, long revision, Instant at) {}
 }

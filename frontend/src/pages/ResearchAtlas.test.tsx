@@ -73,18 +73,22 @@ describe('server-backed Research Atlas', () => {
     vi.mocked(searchCatalogue).mockResolvedValue(page)
     renderAtlas()
 
-    expect((await screen.findAllByText('Climate Resilience Evidence Archive')).length).toBeGreaterThan(0)
+    expect(await screen.findByRole('button', { name: /Climate Resilience Evidence Archive/ })).toBeInTheDocument()
     expect(searchCatalogue).toHaveBeenCalledWith(expect.objectContaining({
       q: undefined,
       page: 0,
       size: 12,
       sort: 'YEAR_DESC',
     }))
+    expect(screen.getByText('Select a catalogue record')).toBeInTheDocument()
+    expect(screen.queryByText('No similarity score is attached to a catalogue search.')).not.toBeInTheDocument()
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /Climate Resilience Evidence Archive/ }))
     expect(screen.getByText('No similarity score is attached to a catalogue search.')).toBeInTheDocument()
     expect(screen.queryByText('91%')).not.toBeInTheDocument()
     expect(document.querySelector('.score-ring')).toBeNull()
 
-    const user = userEvent.setup()
     await user.type(screen.getByRole('textbox', { name: 'Search studies' }), 'flood')
     await waitFor(() => expect(searchCatalogue).toHaveBeenLastCalledWith(expect.objectContaining({
       q: 'flood',
@@ -92,6 +96,7 @@ describe('server-backed Research Atlas', () => {
       size: 12,
       sort: 'YEAR_DESC',
     })))
+    expect(screen.getByText('Select a catalogue record')).toBeInTheDocument()
     expect(screen.queryByText('91%')).not.toBeInTheDocument()
   })
 })

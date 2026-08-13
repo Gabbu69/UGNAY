@@ -243,11 +243,11 @@ class JdbcEvaluationRepository {
     }
 
     UUID createRun(UUID versionId, String environmentJson, String environmentSha, String manifestJson,
-                   String manifestSha, String codeBuild, long seed, UUID actorId, Instant now) {
+                   String manifestSha, String codeBuild, long seed, UUID actorId, int repetitions, Instant now) {
         UUID id = UUID.randomUUID();
         jdbc.update("INSERT INTO evaluation_runs(id,dataset_version_id,run_status,comparability_status,primary_k,cutoffs_json,repetitions,execution_seed,code_build,environment_json,environment_sha256,run_manifest_json,run_sha256,started_by,queued_at,started_at,completed_at,failure_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 bytes(id), bytes(versionId), RunStatus.QUEUED.name(), ComparabilityStatus.UNAVAILABLE.name(), PRIMARY_K,
-                "[1,3,5,10]", 5, seed, codeBuild, environmentJson, environmentSha, manifestJson, manifestSha,
+                "[1,3,5,10]", repetitions, seed, codeBuild, environmentJson, environmentSha, manifestJson, manifestSha,
                 bytes(actorId), timestamp(now), null, null, null);
         return id;
     }

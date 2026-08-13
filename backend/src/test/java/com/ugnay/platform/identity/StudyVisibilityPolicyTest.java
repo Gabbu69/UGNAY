@@ -36,6 +36,14 @@ class StudyVisibilityPolicyTest {
     }
 
     @Test
+    void protectedTextRedactionIsCentralAndCaseInsensitive() {
+        assertThat(policy.mustRedactProtectedText(cics, " restricted ")).isTrue();
+        assertThat(policy.mustRedactProtectedText(StudyVisibilityPolicy.Scope.anonymousScope(), "EMBARGOED")).isTrue();
+        assertThat(policy.mustRedactProtectedText(StudyVisibilityPolicy.Scope.curatorScope(), "restricted")).isFalse();
+        assertThat(policy.mustRedactProtectedText(cics, "INTERNAL")).isFalse();
+    }
+
+    @Test
     void sqlRestrictionIsFailClosedAndBindsDepartmentInsteadOfEmbeddingIt() {
         StudyVisibilityPolicy.SqlRestriction anonymous = policy.studyTableRestriction(
                 StudyVisibilityPolicy.Scope.anonymousScope());

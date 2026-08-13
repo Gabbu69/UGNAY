@@ -1,7 +1,7 @@
 export type Recommendation = 'NEW' | 'IMPROVE' | 'CONTINUE' | 'POSSIBLE_DUPLICATE' | 'REVIEW_REQUIRED'
 export type DecisionDisposition = 'APPROVE_NEW' | 'APPROVE_IMPROVE' | 'APPROVE_CONTINUE' | 'RETURN_FOR_REVISION' | 'CLOSE_AS_DUPLICATE'
 export type TraceItemType = 'PROBLEM' | 'OBJECTIVE' | 'REQUIREMENT' | 'FEATURE' | 'TEST_CASE' | 'OUTPUT'
-export type AssessmentStatus = 'ASSESSED' | 'UNASSESSED' | 'STALE' | 'PARTIAL'
+export type AssessmentStatus = 'ASSESSED' | 'UNASSESSED' | 'UNAVAILABLE' | 'STALE' | 'PARTIAL'
 export type FindingState = 'OPEN' | 'ACCEPTED' | 'RESOLVED' | 'REOPENED'
 export type LineageType = 'CONTINUES' | 'IMPROVES' | 'ADAPTS' | 'REPLICATES' | 'REFERENCES'
 export type RiskLevel = 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL'
@@ -16,10 +16,10 @@ export interface Study {
   abstract: string
   authors: string[]
   keywords: string[]
-  problemSimilarity: number
-  solutionSimilarity: number
-  objectiveOverlap: number
-  confidence: number
+  problemSimilarity: number | null
+  solutionSimilarity: number | null
+  objectiveOverlap: number | null
+  confidence: number | null
   relationship: LineageType | 'SIMILAR' | 'UNAVAILABLE'
   matchReason: string
   excerpt: string
@@ -36,7 +36,7 @@ export interface ProjectSummary {
   adviser: string
   updatedAt: string
   openFindings: number
-  health: number
+  health: number | null
 }
 
 export interface TraceNode {
@@ -112,15 +112,33 @@ export interface ContinuityCriterionRecord {
   key: string
   label: string
   weight: number
-  completion: number
+  state: 'ASSESSED' | 'PARTIAL' | 'UNASSESSED' | 'UNAVAILABLE'
+  value?: number | null
+  source?: string | null
+  assessedAt?: string | null
   explanation: string
+}
+
+export type EvidenceReferenceType = 'DOCUMENT' | 'URL' | 'REPOSITORY' | 'OUTPUT' | 'TEST_RUN' | 'DATASET' | 'OTHER'
+
+export interface EvidenceReferenceRecord {
+  id: string
+  type: EvidenceReferenceType
+  label: string
+  location?: string | null
+  storedDocumentId?: string | null
+  sha256?: string | null
+  verificationState: 'VERIFIED' | 'UNVERIFIED' | 'UNAVAILABLE' | string
+  capturedAt?: string | null
+  capturedBy?: string | null
 }
 
 export interface CompletionPackageRecord {
   id: string
   projectId: string
   status: string
-  readinessScore: number
+  readinessState: 'ASSESSED' | 'PARTIAL' | 'UNASSESSED' | 'UNAVAILABLE'
+  readinessScore: number | null
   codeDataRightsConfirmed: boolean
   criteria: ContinuityCriterionRecord[]
   blockers: string[]
@@ -148,6 +166,7 @@ export interface Finding {
 export interface HealthDimension {
   id: string
   label: string
+  state: AssessmentStatus
   score: number | null
   delta: number
   detail: string
@@ -181,11 +200,14 @@ export interface WorkspaceData {
     roles: string[]
     department: string
   }
-  project: ProjectSummary
+  project: ProjectSummary | null
   projects: ProjectSummary[]
   studies: Study[]
   traceNodes: TraceNode[]
   traceEdges: TraceEdge[]
+  graphTruncated?: boolean
+  graphTotalNodes?: number
+  graphTotalEdges?: number
   findings: Finding[]
   health: HealthDimension[]
   reviewQueue: ReviewItem[]
@@ -206,7 +228,10 @@ export interface DiscoveryRun {
   id: string
   status: AssessmentStatus
   recommendation: Recommendation
-  confidence: number
+  confidenceState: AssessmentStatus
+  confidence: number | null
   candidates: Study[]
   algorithmVersion: string
+  assessmentStatus?: AssessmentStatus
+  explanation?: string
 }

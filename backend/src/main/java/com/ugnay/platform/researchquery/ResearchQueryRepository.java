@@ -10,6 +10,7 @@ import com.ugnay.platform.researchquery.ResearchQueryAst.Logical;
 import com.ugnay.platform.researchquery.ResearchQueryAst.Predicate;
 import com.ugnay.platform.researchquery.ResearchQueryAst.StringLiteral;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.security.core.Authentication;
@@ -42,7 +43,7 @@ import static com.ugnay.platform.researchquery.QueryDiagnostic.Stage.SEMANTIC;
  */
 @Repository
 public class ResearchQueryRepository {
-    static final int MAX_CANDIDATES = 10_000;
+    static final int ABSOLUTE_MAX_CANDIDATES = 10_000;
     private static final int SQL_TIMEOUT_SECONDS = 4;
     private static final String STUDY_COLUMNS = """
             s.id, s.institutional_code, s.title, s.academic_year, s.department_id,
@@ -86,10 +87,13 @@ public class ResearchQueryRepository {
 
     private final JdbcTemplate jdbc;
     private final StudyVisibilityPolicy studyVisibility;
+    private final int maxCandidates;
 
-    public ResearchQueryRepository(JdbcTemplate jdbc, StudyVisibilityPolicy studyVisibility) {
+    public ResearchQueryRepository(JdbcTemplate jdbc, StudyVisibilityPolicy studyVisibility,
+            @Value("${ugnay.research-query.max-candidates:10000}") int maxCandidates) {
         this.jdbc = jdbc;
         this.studyVisibility = studyVisibility;
+        this.maxCandidates = Math.max(1, Math.min(maxCandidates, ABSOLUTE_MAX_CANDIDATES));
     }
 
     @Transactional(readOnly = true)
@@ -125,22 +129,24 @@ public class ResearchQueryRepository {
                 statement.setBytes(1, bytes(snapshot.orElseThrow().id()));
                 bind(statement, 2, restriction.parameters());
                 statement.setQueryTimeout(SQL_TIMEOUT_SECONDS);
-                statement.setMaxRows(MAX_CANDIDATES + 1);
+                statement.setMaxRows(maxCandidates + 1);
             }, this::baseStudy);
         } else {
             String sql = ALL_STUDIES_SQL + restriction.clause() + " ORDER BY s.id";
             base = query(sql, statement -> {
                 bind(statement, 1, restriction.parameters());
                 statement.setQueryTimeout(SQL_TIMEOUT_SECONDS);
-                statement.setMaxRows(MAX_CANDIDATES + 1);
+                statement.setMaxRows(maxCandidates + 1);
             }, this::baseStudy);
         }
-        boolean truncated = base.size() > MAX_CANDIDATES;
-        if (truncated) base = new ArrayList<>(base.subList(0, MAX_CANDIDATES));
+        boolean truncated = base.size() > maxCandidates;
+        if (truncated) base = new ArrayList<>(base.subList(0, maxCandidates));
         WarehouseSnapshot used = snapshot.orElse(null);
         return new CandidateLoad(enrich(base, used == null ? null : used.id()), truncated,
                 used == null ? null : used.id(), used == null ? null : used.publishedAt());
     }
+
+    int maxCandidates() { return maxCandidates; }
 
     private Preparation prepareThesis(QueryPlan plan, Authentication authentication) {
         QueryPlan.ContextSpec spec = plan.context();
@@ -201,7 +207,10 @@ public class ResearchQueryRepository {
         if (accountResult.isEmpty()) return false;
         AccountRow account = accountResult.orElseThrow();
         if (account.departmentId() == null || !Arrays.equals(account.departmentId(), proposal.departmentId())) return false;
-        if (proposal.projectId() == null) return true;
+        if (proposal.projectId() == null) {
+            return Arrays.equals(account.id(), proposal.createdBy())
+                    || Arrays.equals(account.id(), proposal.submittedBy());
+        }
         Integer memberships = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM project_memberships WHERE project_id=? AND user_id=?",
                 Integer.class, proposal.projectId(), account.id());

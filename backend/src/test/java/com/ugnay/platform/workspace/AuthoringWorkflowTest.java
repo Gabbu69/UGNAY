@@ -20,6 +20,8 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.nio.ByteBuffer;
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -84,12 +86,25 @@ class AuthoringWorkflowTest {
 
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM baseline_items WHERE baseline_id=?", Integer.class, bytes(originalBaseline)))
                 .isEqualTo(originalBaselineItems);
+        UUID approverId = UUID.randomUUID();
+        String approverEmail = "baseline.approver@ugnay.local";
+        byte[] departmentId = jdbc.queryForObject("SELECT department_id FROM projects WHERE id=?", byte[].class, bytes(project.id()));
+        jdbc.update("INSERT INTO user_accounts(id,department_id,email,display_name,account_status,row_version,created_at) VALUES(?,?,?,?,?,?,?)",
+                bytes(approverId), departmentId, approverEmail, "Baseline Approver", "ACTIVE", 0, Timestamp.from(Instant.now()));
         var approved = service.approveBaseline(project.id(),
-                "The complete problem-to-output chain is ready to become immutable baseline two.", "admin@ugnay.local");
+                "The complete problem-to-output chain is ready to become immutable baseline two.", approverEmail);
         assertThat(approved.project().baselineNumber()).isEqualTo(2);
         assertThat(approved.baseline().items()).allMatch(item -> item.lifecycleStatus().equals("APPROVED"));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM baseline_items WHERE baseline_id=?", Integer.class,
                 bytes(approved.project().currentBaselineId()))).isEqualTo(approved.baseline().items().size());
+        assertThat(jdbc.queryForObject("SELECT u.email FROM project_baselines b JOIN user_accounts u ON u.id=b.approved_by WHERE b.id=?",
+                String.class, bytes(approved.project().currentBaselineId()))).isEqualTo(approverEmail);
+
+        var attributedChange = service.createChange(project.id(), approved.project().currentBaselineId(),
+                "Preserve actor attribution", "Verify that the authoritative request records its authenticated author.",
+                List.of(requirement.id()), List.of(), approverEmail);
+        assertThat(jdbc.queryForObject("SELECT u.email FROM change_requests c JOIN user_accounts u ON u.id=c.requested_by WHERE c.id=?",
+                String.class, bytes(attributedChange.id()))).isEqualTo(approverEmail);
 
         var execution = service.recordTestExecution(project.id(), test.id(), "PASSED", "release-authoring-1", true,
                 "admin@ugnay.local").artifact();
@@ -100,12 +115,13 @@ class AuthoringWorkflowTest {
         assertThat(service.traceability(project.id()).executions()).filteredOn(value -> value.id().equals(execution.id()))
                 .singleElement().satisfies(value -> assertThat(value.current()).isFalse());
 
-        List<WorkspaceService.CriterionEvidence> criteria = service.completionPackage(project.id()).criteria().stream()
-                .map(value -> new WorkspaceService.CriterionEvidence(value.key(), .75, "Evidence is recorded and awaiting final coordinator review."))
-                .toList();
-        service.updateCompletionEvidence(project.id(), true, "https://example.edu/authoring-pilot", "abc123def456",
+        List<WorkspaceService.EvidenceReferenceInput> references = List.of(
+                new WorkspaceService.EvidenceReferenceInput("REPOSITORY", "Repository handoff", "https://example.edu/authoring-pilot", null, null),
+                new WorkspaceService.EvidenceReferenceInput("OUTPUT", "Versioned output", "https://example.edu/authoring-pilot/output", null, null),
+                new WorkspaceService.EvidenceReferenceInput("TEST_RUN", "Release test run", "https://example.edu/authoring-pilot/tests", null, null));
+        service.updateCompletionEvidence(project.id(), "https://example.edu/authoring-pilot", "abc123def456",
                 "Run the verified Docker Compose profile and follow the seeded setup guide.", List.of("Pilot scope only"),
-                List.of("Validate with another department"), List.of("Complete longitudinal evaluation"), criteria,
+                List.of("Validate with another department"), List.of("Complete longitudinal evaluation"), references,
                 "admin@ugnay.local");
 
         WorkspaceService restarted = new WorkspaceService(similarity, alignment, impact, lineage, "hybrid-v1.0.0", audit,
@@ -134,24 +150,24 @@ class AuthoringWorkflowTest {
                  "priority":"MUST","acceptanceCriteria":"Evidence opens in two seconds.","verificationMethod":"TEST"}
                 """.formatted(UUID.randomUUID().toString().substring(0, 6).toUpperCase());
 
-        mvc.perform(post("/api/v1/projects/{id}/trace-items", project.id()).with(user("student@ugnay.local").roles("STUDENT"))
+        mvc.perform(post("/api/v1/projects/{id}/trace-items", project.id()).with(user("admin@ugnay.local").roles("STUDENT"))
                         .with(csrf()).contentType(MediaType.APPLICATION_JSON).content(request))
                 .andExpect(status().isPreconditionRequired());
 
         String originalEtag = "\"" + service.project(project.id()).rowVersion() + "\"";
-        mvc.perform(post("/api/v1/projects/{id}/trace-items", project.id()).with(user("student@ugnay.local").roles("STUDENT"))
+        mvc.perform(post("/api/v1/projects/{id}/trace-items", project.id()).with(user("admin@ugnay.local").roles("STUDENT"))
                         .with(csrf()).header("If-Match", originalEtag).contentType(MediaType.APPLICATION_JSON).content(request))
                 .andExpect(status().isCreated())
                 .andExpect(header().string("ETag", "\"" + (project.rowVersion() + 1) + "\""));
 
         String staleRequest = request.replace("R-API-", "R-OLD-");
-        mvc.perform(post("/api/v1/projects/{id}/trace-items", project.id()).with(user("student@ugnay.local").roles("STUDENT"))
+        mvc.perform(post("/api/v1/projects/{id}/trace-items", project.id()).with(user("admin@ugnay.local").roles("STUDENT"))
                         .with(csrf()).header("If-Match", originalEtag).contentType(MediaType.APPLICATION_JSON).content(staleRequest))
                 .andExpect(status().isPreconditionFailed());
 
         String currentEtag = "\"" + service.project(project.id()).rowVersion() + "\"";
         mvc.perform(post("/api/v1/projects/{id}/baselines/approve", project.id())
-                        .with(user("student@ugnay.local").roles("STUDENT")).with(csrf()).header("If-Match", currentEtag)
+                        .with(user("admin@ugnay.local").roles("STUDENT")).with(csrf()).header("If-Match", currentEtag)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"rationale\":\"Student users cannot approve an immutable academic baseline.\"}"))
                 .andExpect(status().isForbidden());

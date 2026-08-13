@@ -140,7 +140,8 @@ public class ResearchQueryService {
         else status = "EXECUTED";
         if (candidates.truncated()) {
             diagnostics.add(new QueryDiagnostic(EXECUTION, "EXEC_CANDIDATE_LIMIT",
-                    "The live catalogue exceeded the 10,000-study bounded candidate limit; results are PARTIAL.",
+                    "The live catalogue exceeded this runtime profile's " + repository.maxCandidates()
+                            + "-study bounded candidate limit; results are PARTIAL.",
                     EXECUTION_SPAN, List.of()));
         }
 

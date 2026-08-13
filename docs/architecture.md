@@ -23,7 +23,7 @@ flowchart LR
     App2 --> ClamAV["ClamAV"]
 ```
 
-Windows Lite is the primary 4 GB distribution: setup installs checksummed portable Java/MySQL/application/model assets under `%LOCALAPPDATA%\UGNAY`; application and database bind only to loopback. The stronger-machine Compose topology remains optional. Both serve the bundled React build from Spring as one origin and use the same MySQL/Flyway evidence model.
+Windows Lite is the primary 4 GB distribution: setup installs checksummed portable Java/MySQL/application/model assets under `%LOCALAPPDATA%\UGNAY`; application and database bind only to loopback. The stronger-machine Compose topology remains optional. Both serve the bundled React build from Spring as one origin and use the same MySQL/Flyway evidence model. Lite also sets one fair heavy-operation permit. PDF extraction, ONNX inference, retrieval evaluation, and warehouse publication therefore do not compete for heap/native memory; durable jobs remain queued in MySQL, while interactive semantic scoring falls back honestly to `PARTIAL` when that lane is occupied.
 
 Identity is JDBC-backed. The first application start creates the configured bootstrap administrator only when its normalized email is absent; accepted 72-hour invitations create persistent accounts with Argon2id credentials and one requested role. Sessions are stored in the Flyway-managed Spring Session tables. The React account panel supports login/logout, shows every granted role, and gives curators a compact access desk for invitations and selected-project memberships. Raw invitation-token acceptance remains an API operation. Password reset, account disablement, global role reassignment, and automated invitation delivery are not implemented.
 
@@ -98,7 +98,9 @@ Neither the interpreter nor evaluation module calls a decision write service. Re
 
 ### Completion and future continuation
 
-The `/continuity` Continuity Package Studio lets a student, adviser, or coordinator record repository URL and revision, setup instructions, code/data rights, structured limitations, recommendations, unfinished work, and weighted readiness evidence. The server recomputes readiness and project health rather than accepting a patched status. Only a coordinator may invoke completion. Completion evaluates Must-requirement verification, priority-weighted coverage, objective/output links, critical findings, accepted-exception validity, repository/setup evidence, rights, and structured unfinished work. Success atomically creates one catalogue study linked to the source project. A successor may claim a continuation item, but never rewrites predecessor history.
+The `/continuity` Continuity Package Studio lets a student, adviser, or coordinator append document, URL, repository, output, test-run, and dataset references plus repository revision, setup instructions, structured limitations, recommendations, and unfinished work. It no longer accepts readiness sliders or a rights checkbox. The server derives assessed values from current trace/test records and independently verified references; a recorder cannot verify their own reference. Missing evidence stays `UNASSESSED` or `PARTIAL`, without a numeric value. Only a coordinator may invoke completion. Completion evaluates Must-requirement verification, priority-weighted coverage, objective/output links, critical findings, accepted-exception validity, repository/setup evidence, verified rights, and structured unfinished work. Success atomically creates one catalogue study linked to the source project. A successor may claim a continuation item, but never rewrites predecessor history.
+
+The canonical `/projects/{projectId}/reviews` inbox reads project-bound persisted review records. Revision requests and student responses append actor-attributed history instead of replacing a queue item. Each mutation uses the current project ETag and enforces explicit membership plus the persisted academic role. The legacy `/review-queue?projectId=...` form is redirect-only.
 
 ### Warehouse publication and analysis
 
@@ -112,7 +114,7 @@ The `/continuity` Continuity Package Studio lets a student, adviser, or coordina
 
 ### Research-query interpretation
 
-`POST /research-queries/execute` runs a hand-written tokenizer, recursive-descent parser, sealed source-spanned AST, semantic validator, and typed-plan interpreter. The plan contains enums and values rather than SQL. Fixed prepared statements, a 10,000-candidate ceiling, maximum result limit 100, and a five-second deadline bound execution. The interpreter prefers the latest published warehouse snapshot and reports an explicit live-catalogue fallback when no snapshot exists. See [UGNAY RQL](research-query-language.md).
+`POST /research-queries/execute` runs a hand-written tokenizer, recursive-descent parser, sealed source-spanned AST, semantic validator, and typed-plan interpreter. The plan contains enums and values rather than SQL. Fixed prepared statements, a profile-bounded candidate ceiling (2,000 on Lite; at most 10,000 elsewhere), maximum result limit 100, and a five-second deadline bound execution. The interpreter prefers the latest published warehouse snapshot and reports an explicit live-catalogue fallback when no snapshot exists. See [UGNAY RQL](research-query-language.md).
 
 ### Retrieval evaluation
 
@@ -164,6 +166,9 @@ All routes below are under `/api/v1`. CSRF protection also applies to every sess
 | `POST /projects/{id}/trace-links` | Student, Adviser, Coordinator | Project ETag | Current project ETag |
 | `POST /projects/{id}/test-executions` | Student, Adviser, Coordinator | Project ETag | Current project ETag |
 | `POST /projects/{id}/completion-package/evidence` | Student, Adviser, Coordinator | Project ETag | Current project ETag |
+| `POST /projects/{id}/completion-package/evidence-references/{referenceId}/verification` | Adviser, Coordinator, Reviewer; different actor | Project ETag | Current project ETag |
+| `POST /projects/{id}/reviews/{reviewId}/revision-requests` | Persisted required role or Coordinator | Project ETag | Current project ETag |
+| `POST /projects/{id}/reviews/{reviewId}/revision-responses` | Student, Adviser, Coordinator | Project ETag | Current project ETag |
 | `POST /projects/{id}/analysis-runs` | Adviser, Coordinator | Project ETag | No ETag header; reload project before another write |
 | `POST /projects/{id}/baselines/approve` | Coordinator | Project ETag | Current project ETag |
 | `POST /projects/{id}/complete` | Coordinator | Project ETag | Current project ETag |
@@ -172,4 +177,4 @@ All routes below are under `/api/v1`. CSRF protection also applies to every sess
 
 ## Capacity assumptions
 
-The pilot ceiling is 10,000 studies and 1,000 trace nodes in a project. Active 384-dimensional embeddings fit in application memory and remain persisted as rebuildable derived data in MySQL. This removes the operational cost of a graph or vector database. Search or graph infrastructure should be reconsidered only after measurement shows that the pilot limits or p95 targets cannot be met.
+The institutional benchmark ceiling is 10,000 studies and 1,000 trace nodes in a project. Windows Lite intentionally caps one evaluation/RQL corpus at 2,000 studies, one evaluation set at 100 queries, evaluation timing at three repetitions, and one warehouse collection at 50,000 source rows. These are safety limits, not fabricated performance claims; responses identify truncation as `PARTIAL`. Active 384-dimensional embeddings remain rebuildable derived data in MySQL. Search or graph infrastructure should be reconsidered only after measurement shows that the configured limits or p95 targets cannot be met.

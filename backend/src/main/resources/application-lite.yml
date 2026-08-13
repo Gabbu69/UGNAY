@@ -31,6 +31,21 @@ server:
       cookie:
         secure: false
 ugnay:
+  heavy-operations:
+    max-concurrent: 1
+  evaluation:
+    max-corpus-size: 2000
+    max-query-count: 100
+    repetitions: 3
+    queue-poll-millis: 2500
+  research-query:
+    max-candidates: 2000
+  graph:
+    max-nodes: 500
+    max-edges: 1000
+  warehouse:
+    max-source-studies: 2000
+    max-source-rows: 50000
   security:
     allowed-origins: ""
     public-demo-read: false

@@ -27,6 +27,8 @@ Requirements: 64-bit Windows 10/11, at least 3.5 GB detected RAM, a page file, 5
 
 No preinstalled Java, MySQL, Node, Maven, Docker, XAMPP, MinIO, or ClamAV is required.
 
+> **Release boundary:** the setup script is implemented, but it cannot complete until the matching public `v0.2.0` release contains the JAR, INT8 model, tokenizer ZIP, and checksum manifest. This source handoff deliberately does not create that tag or release. Until those four assets are published and a clean install is verified, use the development/demo instructions below instead of claiming Windows Lite installation acceptance.
+
 ```powershell
 git clone https://github.com/Gabbu69/UGNAY.git
 Set-Location UGNAY
@@ -123,7 +125,7 @@ Project work uses URL-scoped routes such as `/projects/:projectId/alignment`, `/
 
 ## Development
 
-Technology: Java 21, Spring Boot 4.1, Spring Security, JDBC/JPA, Flyway, Spring Modulith, MySQL 8.4, React 19, TypeScript, Vite, TanStack Query, Motion, Cytoscape.js, and ECharts. The React production build is bundled into the executable Spring JAR.
+Technology: Java 21, Spring Boot 4.1, Spring Security, JDBC/JPA, Flyway, Spring Modulith, MySQL 8.4, React 19, TypeScript, Vite, TanStack Query, Motion, and route-lazy Cytoscape.js. The React production build is bundled into the executable Spring JAR.
 
 For the optional Compose development environment:
 
@@ -188,7 +190,7 @@ No licensed institutional corpus or adjudicated qrel set is bundled. Therefore r
 - The INT8 model is benchmarked by observed English/Filipino results, not trusted by label alone.
 - Initial setup/update requires internet; ordinary use does not.
 
-More detail: [architecture](docs/architecture.md), [research framework](docs/research-framework.md), [UGNAY RQL](docs/research-query-language.md), [decision rules](docs/decision-rules.md), [data dictionary](docs/data-dictionary.md), [security and operations](docs/security-and-operations.md), [acceptance and demo](docs/acceptance-and-demo.md), and [OpenAPI](backend/src/main/resources/static/openapi.yaml).
+More detail: [architecture](docs/architecture.md), [research framework](docs/research-framework.md), [UGNAY RQL](docs/research-query-language.md), [decision rules](docs/decision-rules.md), [data dictionary](docs/data-dictionary.md), [security and operations](docs/security-and-operations.md), [acceptance and demo](docs/acceptance-and-demo.md), [defense walkthrough](docs/defense-walkthrough.md), and [OpenAPI](backend/src/main/resources/static/openapi.yaml).
 
 ## Handoff to another AI
 

@@ -104,14 +104,18 @@ public final class AlignmentAnalyzer {
         long moderate = traceability.findings().stream().filter(f -> f.state() == FindingState.OPEN && f.severity() == Severity.MODERATE).count();
         double alignment = clamp(100 - high * 18 - moderate * 7);
         List<TraceItem> requirements = traceability.items().stream().filter(type(TraceItemType.REQUIREMENT)).toList();
-        double readiness = requirements.isEmpty() ? 0 : requirements.stream().mapToDouble(TraceItem::readinessScore).average().orElse(0);
-        double verification = traceability.coverage().priorityWeightedPassingCoverage();
-        double scope = scopeRisk.score() == null ? 0 : 100 - scopeRisk.score();
+        Double readiness = requirements.isEmpty() ? null
+                : requirements.stream().mapToDouble(TraceItem::readinessScore).average().orElseThrow();
+        Double verification = traceability.coverage().status() == AssessmentStatus.UNASSESSED ? null
+                : traceability.coverage().priorityWeightedPassingCoverage();
+        Double scope = scopeRisk.status() == AssessmentStatus.UNASSESSED || scopeRisk.score() == null
+                ? null : 100.0 - scopeRisk.score();
         Double continuity = completionPackage == null ? null : completionPackage.readinessScore();
 
         List<HealthDimension> dimensions = List.of(
                 dimension("alignment", "Alignment", AssessmentStatus.ASSESSED, alignment, "Missing and invalid trace relationships reduce this dimension."),
-                dimension("requirements", "Requirement readiness", AssessmentStatus.ASSESSED, readiness, "Average deterministic readiness of active requirements."),
+                dimension("requirements", "Requirement readiness", requirements.isEmpty() ? AssessmentStatus.UNASSESSED : AssessmentStatus.ASSESSED,
+                        readiness, requirements.isEmpty() ? "No current requirements have been assessed." : "Average deterministic readiness of active requirements."),
                 dimension("verification", "Verification", traceability.coverage().status(), verification, "Priority-weighted current passing coverage."),
                 dimension("scope", "Scope stability", scopeRisk.status(), scope, "Inverse of explained scope risk."),
                 dimension("continuity", "Continuity readiness", continuity == null ? AssessmentStatus.UNASSESSED : AssessmentStatus.ASSESSED,
@@ -128,7 +132,7 @@ public final class AlignmentAnalyzer {
 
     public ScopeRisk scopeRisk(Project project, Traceability traceability, int approvedGrowth, int unapprovedGrowth, List<String> boundaryFlags) {
         if (project.currentBaselineId() == null) {
-            return new ScopeRisk(AssessmentStatus.UNASSESSED, null, "UNASSESSED", 0, 0, 0, 0,
+            return new ScopeRisk(AssessmentStatus.UNASSESSED, null, "UNASSESSED", null, null, null, null,
                     List.of("Scope risk requires an approved baseline."));
         }
         int governance = Math.min(35, Math.max(0, unapprovedGrowth));

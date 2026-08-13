@@ -1,10 +1,9 @@
-import { useCallback, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useMemo, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, ArrowRight, GitBranch, Grid3X3, PenLine, Search, ShieldCheck } from 'lucide-react'
 import { useWorkspace } from '../hooks/useWorkspace'
 import { useAuthSession } from '../hooks/useAuthSession'
 import { ApiProblem, rerunProjectAnalysis } from '../lib/api'
-import { TraceGraph } from '../components/TraceGraph'
 import { EvidenceChain } from '../components/EvidenceChain'
 import { FindingDrawer } from '../components/FindingDrawer'
 import { EvidenceAuthoringStudio } from '../components/EvidenceAuthoringStudio'
@@ -15,16 +14,19 @@ const typeTone: Record<TraceItemType, 'coral' | 'violet' | 'teal' | 'neutral' | 
   PROBLEM: 'coral', OBJECTIVE: 'violet', REQUIREMENT: 'teal', FEATURE: 'neutral', TEST_CASE: 'amber', OUTPUT: 'teal',
 }
 
+const TraceGraph = lazy(() => import('../components/TraceGraph').then((module) => ({ default: module.TraceGraph })))
+
 export default function AlignmentWorkspace() {
   const { data } = useWorkspace()
   const { data: auth } = useAuthSession()
   const queryClient = useQueryClient()
   const workspace = data?.data
+  const project = workspace?.project
   const nodes = useMemo(() => workspace?.traceNodes ?? [], [workspace?.traceNodes])
   const edges = useMemo(() => workspace?.traceEdges ?? [], [workspace?.traceEdges])
   const findings = useMemo(() => workspace?.findings ?? [], [workspace?.findings])
-  const [view, setView] = useState<'graph' | 'matrix'>('graph')
-  const [selectedId, setSelectedId] = useState('r2')
+  const [view, setView] = useState<'graph' | 'matrix'>(() => window.matchMedia('(max-width: 720px)').matches ? 'matrix' : 'graph')
+  const [selectedId, setSelectedId] = useState('')
   const [selectedFinding, setSelectedFinding] = useState<Finding>()
   const [authoringOpen, setAuthoringOpen] = useState(false)
   const [authoringConfirmation, setAuthoringConfirmation] = useState('')
@@ -47,7 +49,8 @@ export default function AlignmentWorkspace() {
   }), [artifactFilter, findingCodes, nodes, normalizedQuery])
   const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((node) => node.id)), [visibleNodes])
   const visibleEdges = useMemo(() => edges.filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target)), [edges, visibleNodeIds])
-  const selected = visibleNodes.find((node) => node.id === selectedId) ?? visibleNodes[0]
+  const matrixEdgeKeys = useMemo(() => new Set(visibleEdges.map((edge) => `${edge.source}\u0000${edge.target}`)), [visibleEdges])
+  const selected = visibleNodes.find((node) => node.id === selectedId)
   const related = useMemo(() => selected
     ? visibleEdges.filter((edge) => edge.source === selected.id || edge.target === selected.id)
     : [], [selected, visibleEdges])
@@ -57,17 +60,17 @@ export default function AlignmentWorkspace() {
   const alignment = dimension('alignment')
   const verification = dimension('verification')
   const readiness = dimension('requirements') ?? dimension('readiness')
-  const updatedAt = workspace?.project.updatedAt ? new Date(workspace.project.updatedAt) : undefined
-  const baselineSummary = workspace
-    ? `${workspace.project.stage} · ${nodes.length} artifacts · ${edges.length} links`
-    : `${nodes.length} pilot artifacts · ${edges.length} links`
-  const canAnalyze = data?.source === 'LIVE' && auth?.session.authenticated === true
+  const updatedAt = project?.updatedAt ? new Date(project.updatedAt) : undefined
+  const baselineSummary = project
+    ? `${project.stage} · ${nodes.length} artifacts · ${edges.length} links`
+    : 'No persisted project selected'
+  const canAnalyze = Boolean(project) && data?.source === 'LIVE' && auth?.session.authenticated === true
     && auth.session.roles.some((role) => role === 'ADVISER' || role === 'COORDINATOR')
   const authoringRoles = auth?.session.roles ?? []
-  const canAuthor = data?.source === 'LIVE' && auth?.session.authenticated === true
+  const canAuthor = Boolean(project) && data?.source === 'LIVE' && auth?.session.authenticated === true
     && authoringRoles.some((role) => role === 'STUDENT' || role === 'ADVISER' || role === 'COORDINATOR')
   const analysisMutation = useMutation({
-    mutationFn: () => rerunProjectAnalysis(workspace?.project.id ?? ''),
+    mutationFn: () => rerunProjectAnalysis(project?.id ?? ''),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace'] }),
   })
   const actionError = analysisMutation.error instanceof ApiProblem ? analysisMutation.error.detail : analysisMutation.error?.message
@@ -80,11 +83,12 @@ export default function AlignmentWorkspace() {
       {authoringConfirmation ? <div className="recorded-banner" role="status"><ShieldCheck size={20} /><div><strong>Evidence chain updated</strong><span>{authoringConfirmation}</span></div><button type="button" onClick={() => setAuthoringConfirmation('')}>Dismiss</button></div> : null}
       {analysisMutation.isSuccess ? <div className="recorded-banner" role="status"><ShieldCheck size={20} /><div><strong>Alignment analysis refreshed</strong><span>Findings, coverage, scope risk, and health were recalculated from the current baseline.</span></div></div> : null}
       {analysisMutation.isError ? <div className="recorded-banner" role="alert"><AlertTriangle size={20} /><div><strong>Analysis was not updated</strong><span>{actionError ?? 'Reload the project and retry with its current baseline.'}</span></div></div> : null}
+      {workspace?.graphTruncated ? <div className="recorded-banner" role="status"><AlertTriangle size={20} /><div><strong>Large graph is truncated</strong><span>Showing {nodes.length} of {workspace.graphTotalNodes ?? nodes.length} artifacts and {edges.length} of {workspace.graphTotalEdges ?? edges.length} relationships. Use the paged trace-graph API or filters for the remaining evidence.</span></div></div> : null}
       <EvidenceChain active="REQUIREMENT" />
       <div className="metric-strip">
-        <Metric label="Alignment health" value={alignment?.score == null ? '—' : String(Math.round(alignment.score))} note={alignment?.detail ?? 'Not yet assessed against a live baseline'} accent="teal" />
-        <Metric label="Verification health" value={verification?.score == null ? '—' : String(Math.round(verification.score))} note={verification?.detail ?? 'Current test evidence is not yet assessed'} accent="coral" />
-        <Metric label="Requirement readiness" value={readiness?.score == null ? '—' : String(Math.round(readiness.score))} note={readiness?.detail ?? 'Requirement quality is not yet assessed'} accent="amber" />
+        <Metric label="Alignment health" value={alignment?.state === 'ASSESSED' && alignment.score != null ? String(Math.round(alignment.score)) : '—'} note={alignment?.state === 'ASSESSED' ? alignment.detail : alignment?.state ?? 'UNASSESSED — no live baseline evidence'} accent="teal" />
+        <Metric label="Verification health" value={verification?.state === 'ASSESSED' && verification.score != null ? String(Math.round(verification.score)) : '—'} note={verification?.state === 'ASSESSED' ? verification.detail : verification?.state ?? 'Current test evidence is not yet assessed'} accent="coral" />
+        <Metric label="Requirement readiness" value={readiness?.state === 'ASSESSED' && readiness.score != null ? String(Math.round(readiness.score)) : '—'} note={readiness?.state === 'ASSESSED' ? readiness.detail : readiness?.state ?? 'Requirement quality is not yet assessed'} accent="amber" />
         <Metric label="Open findings" value={String(openFindings.length)} note={`${openFindings.filter((finding) => finding.severity === 'CRITICAL').length} critical · ${openFindings.filter((finding) => finding.severity === 'HIGH').length} high`} accent="violet" />
       </div>
 
@@ -103,9 +107,9 @@ export default function AlignmentWorkspace() {
             <button type="button" className={artifactFilter === 'stale' ? 'is-active' : ''} aria-pressed={artifactFilter === 'stale'} onClick={() => setArtifactFilter('stale')}>Stale <span>{staleNodes.length}</span></button>
             <div><Search size={15} /><input aria-label="Filter artifacts" placeholder="Find code or artifact" value={artifactQuery} onChange={(event) => setArtifactQuery(event.target.value)} /></div>
           </div>
-          {visibleNodes.length === 0 ? <div className="trace-empty" role="status"><Search size={22} /><strong>No artifacts match this view</strong><span>Clear the search or choose another evidence filter.</span><button type="button" className="text-button on-dark" onClick={() => { setArtifactFilter('all'); setArtifactQuery('') }}>Reset filters</button></div> : view === 'graph' ? <TraceGraph nodes={visibleNodes} edges={visibleEdges} selectedId={selected?.id} onSelect={handleSelect} /> : (
+          {visibleNodes.length === 0 ? <div className="trace-empty" role="status"><Search size={22} /><strong>No artifacts match this view</strong><span>Clear the search or choose another evidence filter.</span><button type="button" className="text-button on-dark" onClick={() => { setArtifactFilter('all'); setArtifactQuery('') }}>Reset filters</button></div> : view === 'graph' ? <Suspense fallback={<div className="trace-empty" role="status"><span>Loading the graph only for this view...</span></div>}><TraceGraph nodes={visibleNodes} edges={visibleEdges} selectedId={selected?.id} onSelect={handleSelect} /></Suspense> : (
             <div className="trace-matrix-wrap" role="region" tabIndex={0} aria-label="Scrollable traceability relationship matrix">
-              <table className="trace-matrix"><caption className="sr-only">Traceability relationships by source and target artifact</caption><thead><tr><th>Artifact</th>{matrixTargets.map((node) => <th key={node.id}>{node.code}</th>)}</tr></thead><tbody>{matrixSources.map((source) => <tr key={source.id}><th>{source.code}<small>{source.type}</small></th>{matrixTargets.map((target) => <td key={target.id}>{visibleEdges.some((edge) => edge.source === source.id && edge.target === target.id) ? <span role="img" aria-label="Linked">●</span> : <i>—</i>}</td>)}</tr>)}</tbody></table>
+              <table className="trace-matrix"><caption className="sr-only">Traceability relationships by source and target artifact</caption><thead><tr><th>Artifact</th>{matrixTargets.map((node) => <th key={node.id}>{node.code}</th>)}</tr></thead><tbody>{matrixSources.map((source) => <tr key={source.id}><th>{source.code}<small>{source.type}</small></th>{matrixTargets.map((target) => <td key={target.id}>{matrixEdgeKeys.has(`${source.id}\u0000${target.id}`) ? <span role="img" aria-label="Linked">●</span> : <i>—</i>}</td>)}</tr>)}</tbody></table>
             </div>
           )}
           <div className="graph-legend">{Object.entries(typeTone).map(([type, tone]) => <StatusPill key={type} tone={tone}>{type.replace('_', ' ')}</StatusPill>)}</div>
@@ -120,7 +124,7 @@ export default function AlignmentWorkspace() {
         <div className="section-heading"><div><span>EXPLAINABLE ANALYSIS</span><h2>Findings that need human attention</h2></div><p>Rules point to evidence and a next valid action. They never change scope on their own.</p></div>
         <div className="finding-list">{openFindings.map((finding) => <button key={finding.id} className={`finding-row severity-${finding.severity.toLowerCase()}`} onClick={() => setSelectedFinding(finding)}><span className="finding-icon">{finding.severity === 'CRITICAL' ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}</span><div><small>{finding.code} · {finding.rule}</small><strong>{finding.title}</strong><p>{finding.explanation}</p></div><StatusPill tone={finding.severity === 'CRITICAL' ? 'coral' : finding.severity === 'INFO' ? 'teal' : 'amber'}>{finding.severity}</StatusPill><ArrowRight size={17} /></button>)}</div>
       </section>
-      <FindingDrawer finding={selectedFinding} open={Boolean(selectedFinding)} projectId={workspace?.project.id ?? ''} roles={authoringRoles}
+      <FindingDrawer finding={selectedFinding} open={Boolean(selectedFinding)} projectId={project?.id ?? ''} roles={authoringRoles}
         onOpenChange={(open) => { if (!open) setSelectedFinding(undefined) }}
         onOpenArtifact={(itemCode) => {
           const implicated = nodes.find((node) => node.code.toLocaleLowerCase() === itemCode.toLocaleLowerCase())
@@ -132,7 +136,7 @@ export default function AlignmentWorkspace() {
       <EvidenceAuthoringStudio
         open={authoringOpen}
         onOpenChange={setAuthoringOpen}
-        projectId={workspace?.project.id ?? ''}
+        projectId={project?.id ?? ''}
         source={data?.source ?? 'UNAVAILABLE'}
         roles={authoringRoles}
         onRecorded={setAuthoringConfirmation}

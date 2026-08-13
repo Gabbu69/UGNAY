@@ -1,3 +1,3 @@
-533a1ded9193abfe94d603ae95123ef7481db0059433f512303d5d123c6f4c67  ugnay-backend-0.2.0.jar
+ef628d1e3a1407168dccb91553a9f8cdce387e06ccbcac3ff6e9b9d1fc1503b1  ugnay-backend-0.2.0.jar
 739c8f25bbe6d8a6001cd2f048701da9879140cc67d4e9327716111e869dd717  multilingual-e5-small-int8.onnx
 dc8cc013ae86c2d4cc6b10a81716dd7a6650c78a4a3f2051818e21a3ee19e61a  multilingual-e5-small-tokenizer-v0.2.0.zip

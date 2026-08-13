@@ -117,14 +117,12 @@ class WorkspaceServiceRestartTest {
                 AssessmentStatus.ASSESSED, items, links, List.of(execution), List.of(),
                 new Coverage(AssessmentStatus.ASSESSED, 100, 100, 100, 100, 1, 1));
         store.saveTraceability(eligibleTrace);
-        CompletionPackage ready = new CompletionPackage(service.completionPackage(project.id()).id(), project.id(), "READY", 100, true,
+        CompletionPackage ready = new CompletionPackage(service.completionPackage(project.id()).id(), project.id(), "READY",
+                AssessmentStatus.ASSESSED, 100.0, true,
                 List.of(
-                        new ContinuityCriterion("trace", "Trace", 20, 1, "Complete"),
-                        new ContinuityCriterion("outputs", "Outputs", 15, 1, "Complete"),
-                        new ContinuityCriterion("repository", "Repository", 20, 1, "Complete"),
-                        new ContinuityCriterion("tests", "Tests", 15, 1, "Complete"),
-                        new ContinuityCriterion("future-work", "Future work", 15, 1, "Complete"),
-                        new ContinuityCriterion("rights", "Rights", 15, 1, "Complete")),
+                        assessed("trace", "Trace", 20), assessed("outputs", "Outputs", 15),
+                        assessed("repository", "Repository", 20), assessed("tests", "Tests", 15),
+                        assessed("future-work", "Future work", 15), assessed("rights", "Rights", 15)),
                 List.of(), "https://example.edu/completion-pilot", "release123", "Run the documented Compose profile.",
                 List.of("Pilot context only"), List.of("Validate in another department"), List.of("Longitudinal evaluation"));
         store.saveCompletion(ready);
@@ -148,5 +146,10 @@ class WorkspaceServiceRestartTest {
 
     private static byte[] uuidBytes(java.util.UUID id) {
         return java.nio.ByteBuffer.allocate(16).putLong(id.getMostSignificantBits()).putLong(id.getLeastSignificantBits()).array();
+    }
+
+    private static ContinuityCriterion assessed(String key, String label, int weight) {
+        return new ContinuityCriterion(key, label, weight, AssessmentStatus.ASSESSED, 1.0,
+                "TEST_FIXTURE", java.time.Instant.now(), "Complete");
     }
 }

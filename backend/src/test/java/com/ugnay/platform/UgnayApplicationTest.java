@@ -19,7 +19,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.forwardedUrl;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.hasItem;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -30,10 +32,12 @@ class UgnayApplicationTest {
     @Autowired WorkspaceService workspace;
 
     @Test
+    @WithMockUser(username = "admin@ugnay.local", roles = "CURATOR")
     void publicPilotWorkspaceMatchesFrontendContract() throws Exception {
-        mvc.perform(get("/api/v1/workspace"))
+        String projectId = WorkspaceService.id("project-campus-flood").toString();
+        mvc.perform(get("/api/v1/workspace").param("projectId", projectId))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.currentUser.name").value("Dr. Amara Reyes"))
+                .andExpect(jsonPath("$.currentUser.name").value("UGNAY Pilot Administrator"))
                 .andExpect(jsonPath("$.project.code").value("UGNAY-26-014"))
                 .andExpect(jsonPath("$.studies[0].abstract").isString())
                 .andExpect(jsonPath("$.traceNodes").isNotEmpty())
@@ -47,7 +51,17 @@ class UgnayApplicationTest {
     }
 
     @Test
-    @WithMockUser(roles = "STUDENT")
+    void canonicalProjectRoutesServeTheSpaOnDirectRefresh() throws Exception {
+        String projectId = WorkspaceService.id("project-campus-flood").toString();
+        for (String workspacePath : new String[] {"alignment", "changes", "continuity", "reviews"}) {
+            mvc.perform(get("/projects/{projectId}/{workspacePath}", projectId, workspacePath))
+                    .andExpect(status().isOk())
+                    .andExpect(forwardedUrl("/index.html"));
+        }
+    }
+
+    @Test
+    @WithMockUser(username = "admin@ugnay.local", roles = "STUDENT")
     void studentCannotReadAccountOrAuditAdministration() throws Exception {
         mvc.perform(get("/api/v1/users")).andExpect(status().isForbidden());
         mvc.perform(get("/api/v1/invitations")).andExpect(status().isForbidden());
@@ -57,7 +71,8 @@ class UgnayApplicationTest {
     @Test
     @WithMockUser(roles = "CURATOR")
     void curatorCanReadDatabaseBackedAccountAdministration() throws Exception {
-        mvc.perform(get("/api/v1/users")).andExpect(status().isOk()).andExpect(jsonPath("$[0].email").value("admin@ugnay.local"));
+        mvc.perform(get("/api/v1/users")).andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].email", hasItem("admin@ugnay.local")));
         mvc.perform(get("/api/v1/invitations")).andExpect(status().isOk());
         mvc.perform(get("/api/v1/audit-events")).andExpect(status().isOk()).andExpect(jsonPath("$[0].action").exists());
     }
@@ -126,10 +141,11 @@ class UgnayApplicationTest {
     }
 
     @Test
+    @WithMockUser(username = "admin@ugnay.local", roles = "STUDENT")
     void restrictedDiscoveryEvidenceIsRedactedOnTheWire() throws Exception {
         MvcResult result = mvc.perform(get("/api/v1/discovery-runs")).andExpect(status().isOk()).andReturn();
         assertThat(result.getResponse().getContentAsString())
-                .contains("Restricted evidence excerpt.")
+                .doesNotContain("USM Hospital Operations Information System")
                 .doesNotContain("Clinical units need controlled access to patient information");
     }
 
@@ -142,7 +158,7 @@ class UgnayApplicationTest {
     }
 
     @Test
-    @WithMockUser(roles = "STUDENT")
+    @WithMockUser(username = "admin@ugnay.local", roles = "STUDENT")
     void baselineBoundImpactPreviewRequiresExactProjectEtag() throws Exception {
         String changeId = com.ugnay.platform.workspace.WorkspaceService.id("change-route-alert").toString();
         mvc.perform(post("/api/v1/change-requests/" + changeId + "/preview-impact").with(csrf()))
@@ -175,18 +191,29 @@ class UgnayApplicationTest {
     }
 
     @Test
-    @WithMockUser(roles = "STUDENT")
+    @WithMockUser(username = "admin@ugnay.local", roles = "STUDENT")
+    void traceGraphIsBoundedAndReportsHonestPaginationMetadata() throws Exception {
+        String projectId = WorkspaceService.id("project-campus-flood").toString();
+        mvc.perform(get("/api/v1/projects/" + projectId + "/trace-graph").param("page", "0").param("size", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.nodes.length()").value(2))
+                .andExpect(jsonPath("$.page").value(0))
+                .andExpect(jsonPath("$.size").value(2))
+                .andExpect(jsonPath("$.totalNodes").isNumber())
+                .andExpect(jsonPath("$.totalEdges").isNumber())
+                .andExpect(jsonPath("$.truncated").value(true));
+    }
+
+    @Test
+    @WithMockUser(username = "admin@ugnay.local", roles = "STUDENT")
     void discoveryPayloadMatchesFrontendContractAndDisclosesPartialFallback() throws Exception {
-        String input = """
-                {"title":"Campus flood readiness","problemStatement":"Campus buildings lack an offline flood readiness plan and evidence trail.",
-                 "objectives":["Assess building flood readiness","Generate an offline response plan"],
-                 "stakeholders":["Disaster risk office","Students"],"siteContext":"Flood-prone campus buildings",
-                 "domainTerms":["baha","flood","offline","preparedness"]}
-                """;
+        String input = "{\"proposalId\":\"" + WorkspaceService.id("proposal-campus-flood") + "\"}";
         mvc.perform(post("/api/v1/discovery-runs").with(csrf()).contentType(MediaType.APPLICATION_JSON).content(input))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.status").value("PARTIAL"))
                 .andExpect(jsonPath("$.recommendation").value("REVIEW_REQUIRED"))
+                .andExpect(jsonPath("$.confidenceState").value("PARTIAL"))
+                .andExpect(jsonPath("$.confidence").isNumber())
                 .andExpect(jsonPath("$.candidates[0].problemSimilarity").isNumber())
                 .andExpect(jsonPath("$.algorithmVersion").value("hybrid-v1.0.0"));
     }

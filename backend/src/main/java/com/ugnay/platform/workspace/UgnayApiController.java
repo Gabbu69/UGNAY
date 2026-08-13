@@ -28,8 +28,6 @@ import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import jakarta.validation.constraints.Email;
-import jakarta.validation.constraints.DecimalMax;
-import jakarta.validation.constraints.DecimalMin;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -68,13 +66,14 @@ public class UgnayApiController {
     private final ProjectAccessService projectAccess;
     private final StudyVisibilityPolicy studyVisibility;
     private final WorkflowActionService actions;
+    private final IntakeWorkflowService intakes;
     private final CatalogueMetadataRepository catalogueMetadata;
     private final ApplicationEventPublisher events;
 
     public UgnayApiController(WorkspaceService workspace, UiWorkspaceMapper ui,
-                              JdbcIdentityService identities, JdbcAuditService audit,
-                              ProjectAccessService projectAccess, WorkflowActionService actions,
-                              ApplicationEventPublisher events, StudyVisibilityPolicy studyVisibility) {
+                               JdbcIdentityService identities, JdbcAuditService audit,
+                               ProjectAccessService projectAccess, WorkflowActionService actions,
+                               IntakeWorkflowService intakes, ApplicationEventPublisher events, StudyVisibilityPolicy studyVisibility) {
         this.workspace = workspace;
         this.ui = ui;
         this.identities = identities;
@@ -82,32 +81,58 @@ public class UgnayApiController {
         this.projectAccess = projectAccess;
         this.studyVisibility = studyVisibility;
         this.actions = actions;
+        this.intakes = intakes;
         this.catalogueMetadata = ui.catalogueMetadata();
         this.events = events;
     }
 
     @GetMapping("/workspace")
-    public Object workspace(Authentication authentication, @RequestParam(required = false) UUID projectId) {
+    public ResponseEntity<Object> workspace(Authentication authentication, @RequestParam(required = false) UUID projectId) {
         if (projectId != null) projectAccess.requireAccess(authentication, projectId);
-        return ui.workspace(authentication, projectId);
+        int totalProjects = (int) workspace.projects().stream()
+                .filter(project -> projectAccess.canAccess(authentication, project.id())).count();
+        return ResponseEntity.ok().headers(pageHeaders(0, 50, totalProjects, Math.min(totalProjects, 50)))
+                .body(ui.workspace(authentication, projectId));
     }
 
     @GetMapping("/dashboard")
-    public Object dashboard() {
-        Map<String, Object> response = new LinkedHashMap<>(workspace.dashboard());
-        response.put("recentStudies", ui.studies().stream().limit(3).toList());
-        return response;
+    @PreAuthorize("isAuthenticated()")
+    public Object dashboard(Authentication authentication) {
+        List<Project> visibleProjects = workspace.projects().stream()
+                .filter(project -> projectAccess.canAccess(authentication, project.id())).toList();
+        Set<UUID> visibleProjectIds = visibleProjects.stream().map(Project::id).collect(java.util.stream.Collectors.toSet());
+        Set<String> visibleProjectCodes = visibleProjects.stream().map(Project::code).collect(java.util.stream.Collectors.toSet());
+        List<Project> boundedProjects = visibleProjects.stream().limit(50).toList();
+        var visibleHealth = boundedProjects.stream().map(project -> workspace.health(project.id())).toList();
+        var visibleReviews = workspace.reviewQueue().stream()
+                .filter(review -> visibleProjectCodes.contains(review.projectCode())).limit(50).toList();
+        var visibleStudies = ui.studies(authentication);
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        counts.put("publishedStudies", visibleStudies.size());
+        counts.put("activeProjects", (int) visibleProjects.stream()
+                .filter(project -> !"COMPLETED".equals(project.status().name())).count());
+        counts.put("openFindings", visibleProjectIds.stream().mapToInt(projectId -> (int) workspace.traceability(projectId)
+                .findings().stream().filter(finding -> finding.state() == FindingState.OPEN).count()).sum());
+        counts.put("pendingReviews", visibleReviews.size());
+        return Map.of("counts", counts, "projectHealth", visibleHealth, "reviewQueue", visibleReviews,
+                "recentStudies", visibleStudies.stream().limit(3).toList(), "activeProjects", boundedProjects,
+                "pagination", Map.of("page", 0, "size", 50, "totalProjects", visibleProjects.size(),
+                        "truncated", visibleProjects.size() > boundedProjects.size()));
     }
 
     @GetMapping("/studies")
     @PreAuthorize("isAuthenticated()")
-    public List<UiContracts.StudyView> studies(Authentication authentication,
-            @RequestParam(required = false) String q) {
+    public ResponseEntity<List<UiContracts.StudyView>> studies(Authentication authentication,
+            @RequestParam(required = false) String q, @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "50") int size) {
         List<UiContracts.StudyView> permitted = ui.studies(authentication);
-        if (q == null || q.isBlank()) return permitted;
-        String query = q.toLowerCase();
-        return permitted.stream().filter(study -> (study.title() + " " + study.abstractText() + " " + String.join(" ", study.keywords()))
-                .toLowerCase().contains(query)).toList();
+        List<UiContracts.StudyView> filtered = permitted;
+        if (q != null && !q.isBlank()) {
+            String query = q.toLowerCase();
+            filtered = permitted.stream().filter(study -> (study.title() + " " + study.abstractText() + " " + String.join(" ", study.keywords()))
+                    .toLowerCase().contains(query)).toList();
+        }
+        return paged(filtered, page, size);
     }
 
     @GetMapping("/studies/{id}")
@@ -160,67 +185,123 @@ public class UgnayApiController {
     }
 
     @GetMapping("/problems")
-    public List<ProblemCase> problems() { return workspace.problems(); }
+    @PreAuthorize("isAuthenticated()")
+    public List<ProblemCase> problems(Authentication authentication) {
+        return workspace.problems().stream().filter(problem -> projectAccess.canAccessProblem(authentication, problem.id())).toList();
+    }
 
     @GetMapping("/problems/{id}")
-    public ProblemCase problem(@PathVariable UUID id) { return workspace.problem(id); }
+    @PreAuthorize("isAuthenticated()")
+    public ProblemCase problem(@PathVariable UUID id, Authentication authentication) {
+        projectAccess.requireProblemAccess(authentication, id);
+        return workspace.problem(id);
+    }
 
     @PostMapping("/problems")
-    public ResponseEntity<ProblemCase> createProblem(@Valid @RequestBody ProblemRequest request) {
+    public ResponseEntity<ProblemCase> createProblem(@Valid @RequestBody ProblemRequest request, Principal principal) {
         ProblemCase created = workspace.createProblem(request.title(), request.problemStatement(), request.stakeholder(),
                 request.affectedUsers(), request.siteContext(), request.desiredOutcome(), request.constraints(),
-                request.privacyClassification(), 0);
+                request.privacyClassification(), 0, principal.getName());
         return ResponseEntity.created(URI.create("/api/v1/problems/" + created.id())).eTag(etag(created.rowVersion())).body(created);
     }
 
+    @PostMapping("/intakes")
+    @PreAuthorize("hasAnyRole('STUDENT','ADVISER','COORDINATOR')")
+    public ResponseEntity<IntakeResponse> submitIntake(
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody IntakeRequest request, Authentication principal) {
+        var command = new IntakeWorkflowService.IntakeCommand(
+                new IntakeWorkflowService.ProblemInput(request.problem().title(), request.problem().problemStatement(),
+                        request.problem().stakeholder(), request.problem().affectedUsers(), request.problem().siteContext(),
+                        request.problem().desiredOutcome(), request.problem().constraints(), request.problem().privacyClassification()),
+                new IntakeWorkflowService.ProposalInput(request.proposal().title(), request.proposal().objectives(),
+                        request.proposal().proposedSolution(), request.proposal().methodology(), request.proposal().dataSources(),
+                        request.proposal().technology(), request.proposal().intendedUsers()),
+                request.evidenceReferences() == null ? List.of() : request.evidenceReferences().stream()
+                        .map(reference -> new IntakeWorkflowService.EvidenceReferenceInput(reference.type(), reference.label(),
+                                reference.location(), reference.storedDocumentId(), reference.sha256())).toList());
+        var result = intakes.submit(idempotencyKey, command, principal.getName());
+        IntakeResponse response = new IntakeResponse(result.idempotencyKey(), result.replayed(), result.problem(), result.proposal(),
+                ui.discovery(result.discovery(), principal), result.evidenceReferences());
+        return ResponseEntity.status(result.replayed() ? HttpStatus.OK : HttpStatus.CREATED)
+                .location(URI.create("/api/v1/proposals/" + result.proposal().id()))
+                .eTag(etag(result.proposal().rowVersion())).body(response);
+    }
+
     @GetMapping("/proposals")
-    public List<Proposal> proposals() { return workspace.proposals(); }
+    @PreAuthorize("isAuthenticated()")
+    public List<Proposal> proposals(Authentication authentication) {
+        return workspace.proposals().stream().filter(proposal -> projectAccess.canAccessProposal(authentication, proposal.id())).toList();
+    }
 
     @GetMapping("/proposals/{id}")
-    public ResponseEntity<Proposal> proposal(@PathVariable UUID id) {
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Proposal> proposal(@PathVariable UUID id, Authentication authentication) {
+        projectAccess.requireProposalAccess(authentication, id);
         Proposal value = workspace.proposal(id);
         return ResponseEntity.ok().eTag(etag(value.rowVersion())).body(value);
     }
 
     @PostMapping("/proposals")
-    public ResponseEntity<Proposal> createProposal(@Valid @RequestBody ProposalRequest request) {
+    public ResponseEntity<Proposal> createProposal(@Valid @RequestBody ProposalRequest request, Authentication authentication) {
+        projectAccess.requireProblemAccess(authentication, request.problemId());
         Proposal created = workspace.createProposal(request.problemId(), request.title(), request.objectives(),
-                request.proposedSolution(), request.methodology(), request.dataSources(), request.technology(), request.intendedUsers());
+                request.proposedSolution(), request.methodology(), request.dataSources(), request.technology(), request.intendedUsers(),
+                authentication.getName());
         return ResponseEntity.created(URI.create("/api/v1/proposals/" + created.id())).eTag(etag(created.rowVersion())).body(created);
     }
 
     @GetMapping("/discovery-runs")
+    @PreAuthorize("isAuthenticated()")
     public List<DiscoveryRun> discoveryRuns(Authentication authentication) {
-        return workspace.discoveries().stream().map(run -> authorizedDiscovery(run, authentication)).toList();
+        return workspace.discoveries().stream()
+                .filter(run -> projectAccess.canAccessProposal(authentication, run.proposalId()))
+                .map(run -> authorizedDiscovery(run, authentication)).toList();
     }
 
     @GetMapping("/discovery-runs/{id}")
+    @PreAuthorize("isAuthenticated()")
     public DiscoveryRun discoveryRun(@PathVariable UUID id, Authentication authentication) {
-        return authorizedDiscovery(workspace.discovery(id), authentication);
+        DiscoveryRun run = workspace.discovery(id);
+        projectAccess.requireProposalAccess(authentication, run.proposalId());
+        return authorizedDiscovery(run, authentication);
     }
 
     @PostMapping("/discovery-runs")
     @ResponseStatus(HttpStatus.CREATED)
-    public UiContracts.DiscoveryView runDiscovery(@Valid @RequestBody DiscoveryRequest request) {
-        if (request.proposalId() != null) return ui.discovery(workspace.runDiscovery(request.proposalId()));
-        String stakeholder = request.stakeholders() == null ? request.stakeholder() : String.join(", ", request.stakeholders());
-        String domain = request.domainTerms() == null ? request.technology() : String.join(" ", request.domainTerms());
-        Proposal transientProposal = new Proposal(UUID.randomUUID(), request.title(), request.problemStatement(), stakeholder,
-                request.affectedUsers() == null ? stakeholder : request.affectedUsers(), request.siteContext(),
-                request.desiredOutcome() == null ? "Determine an evidence-backed research route." : request.desiredOutcome(),
-                request.constraints(), request.privacyClassification() == null ? "INTERNAL" : request.privacyClassification(),
-                request.objectives(), request.proposedSolution() == null ? "Proposed software study in " + domain : request.proposedSolution(),
-                request.methodology(), request.dataSources(), domain, request.intendedUsers() == null ? stakeholder : request.intendedUsers(),
-                "DISCOVERY_ONLY", Instant.now(), 0);
-        return ui.discovery(workspace.runDiscovery(transientProposal));
+    public UiContracts.DiscoveryView runDiscovery(@Valid @RequestBody DiscoveryRequest request, Authentication authentication) {
+        projectAccess.requireProposalAccess(authentication, request.proposalId());
+        return ui.discovery(workspace.runDiscovery(request.proposalId(), authentication.getName()), authentication);
     }
 
     @GetMapping("/proposal-decisions")
-    public List<ProposalDecision> decisions() { return workspace.decisions(); }
+    @PreAuthorize("isAuthenticated()")
+    public List<ProposalDecision> decisions(Authentication authentication) {
+        return workspace.decisions().stream().filter(decision -> projectAccess.canAccessProposal(authentication, decision.proposalId())).toList();
+    }
+
+    @GetMapping("/proposals/{id}/decision-context/{discoveryRunId}")
+    @PreAuthorize("isAuthenticated()")
+    public DecisionContext decisionContext(@PathVariable UUID id, @PathVariable UUID discoveryRunId,
+            Authentication authentication) {
+        projectAccess.requireProposalAccess(authentication, id);
+        DiscoveryRun run = workspace.discovery(discoveryRunId);
+        if (!run.proposalId().equals(id)) throw new IllegalArgumentException("The frozen discovery run does not belong to this proposal.");
+        ProposalDecision decision = workspace.decisions().stream().filter(value -> value.proposalId().equals(id)).findFirst().orElse(null);
+        return new DecisionContext(workspace.proposal(id), workspace.proposalObjectiveRecords(id),
+                authorizedDiscovery(run, authentication), ui.discovery(run, authentication).candidates(), decision,
+                actions.adviserRecommendations(id, discoveryRunId));
+    }
 
     @PostMapping("/proposal-decisions")
     @ResponseStatus(HttpStatus.CREATED)
-    public ProposalDecision decide(@Valid @RequestBody DecisionRequest request, Principal principal) {
+    @PreAuthorize("hasRole('COORDINATOR')")
+    public ProposalDecision decide(@Valid @RequestBody DecisionRequest request, Authentication principal) {
+        projectAccess.requireProposalAccess(principal, request.proposalId());
+        if (request.primaryPredecessorId() != null) {
+            Study candidate = workspace.study(request.primaryPredecessorId());
+            studyVisibility.requireVisible(principal, candidate.visibility(), candidate.department());
+        }
         ProposalDecision decision = workspace.decide(request.proposalId(), request.discoveryRunId(), request.disposition(), request.rationale(),
                 request.primaryPredecessorId(), principal.getName());
         projectAccess.initializeExplicitMemberships();
@@ -229,8 +310,12 @@ public class UgnayApiController {
 
     @PostMapping("/proposals/{id}/continuation-evidence")
     @PreAuthorize("hasAnyRole('STUDENT','ADVISER','COORDINATOR')")
+    @ResponseStatus(HttpStatus.CREATED)
     public Object continuationEvidence(@PathVariable UUID id, @Valid @RequestBody ContinuationEvidenceRequest request,
-            Principal principal) {
+            Authentication principal) {
+        projectAccess.requireProposalAccess(principal, id);
+        Study predecessor = workspace.study(request.predecessorStudyId());
+        studyVisibility.requireVisible(principal, predecessor.visibility(), predecessor.department());
         var links = request.objectiveLinks().stream().map(link -> new RoutingEvidenceRepository.ObjectiveLink(
                 link.proposalObjectiveId(), link.continuationItemId(), link.rationale())).toList();
         return actions.continuationEvidence(id, request.predecessorStudyId(), links, request.codeAccessConfirmed(),
@@ -241,13 +326,21 @@ public class UgnayApiController {
     @PreAuthorize("hasAnyRole('STUDENT','ADVISER','COORDINATOR')")
     @ResponseStatus(HttpStatus.CREATED)
     public Object improvementClaim(@PathVariable UUID id, @Valid @RequestBody ImprovementClaimRequest request,
-            Principal principal) {
+            Authentication principal) {
+        projectAccess.requireProposalAccess(principal, id);
+        Study predecessor = workspace.study(request.predecessorStudyId());
+        studyVisibility.requireVisible(principal, predecessor.visibility(), predecessor.department());
         return actions.improvementClaim(id, request.predecessorStudyId(), request.continuationItemId(), request.claim(),
                 request.baselineMeasure(), request.targetMeasure(), request.evaluationMethod(), principal.getName());
     }
 
     @GetMapping("/proposals/{id}/adviser-recommendations")
-    public Object adviserRecommendations(@PathVariable UUID id) { workspace.proposal(id); return actions.adviserRecommendations(id); }
+    @PreAuthorize("isAuthenticated()")
+    public Object adviserRecommendations(@PathVariable UUID id, Authentication authentication) {
+        projectAccess.requireProposalAccess(authentication, id);
+        workspace.proposal(id);
+        return actions.adviserRecommendations(id);
+    }
 
     @GetMapping("/proposals/{id}/route-evidence/{predecessorId}")
     @PreAuthorize("isAuthenticated()")
@@ -263,13 +356,17 @@ public class UgnayApiController {
     @PreAuthorize("hasRole('ADVISER')")
     @ResponseStatus(HttpStatus.CREATED)
     public Object adviserRecommendation(@PathVariable UUID id, @Valid @RequestBody AdviserRecommendationRequest request,
-            Principal principal) {
+            Authentication principal) {
+        projectAccess.requireProposalAccess(principal, id);
         return actions.adviserRecommendation(id, request.discoveryRunId(), request.recommendation(), request.rationale(), principal.getName());
     }
 
     @GetMapping("/projects")
-    public List<Project> projects(Authentication authentication, @RequestParam(defaultValue = "true") boolean mine) {
-        return workspace.projects().stream().filter(project -> !mine || projectAccess.canAccess(authentication, project.id())).toList();
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<List<Project>> projects(Authentication authentication,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "50") int size) {
+        return paged(workspace.projects().stream()
+                .filter(project -> projectAccess.canAccess(authentication, project.id())).toList(), page, size);
     }
 
     @GetMapping("/projects/{id}")
@@ -281,6 +378,13 @@ public class UgnayApiController {
 
     @GetMapping("/projects/{id}/traceability")
     public Object traceability(@PathVariable UUID id, Authentication authentication) { projectAccess.requireAccess(authentication, id); return workspace.traceability(id); }
+
+    @GetMapping("/projects/{id}/trace-graph")
+    public Object traceGraph(@PathVariable UUID id, @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "50") int size, Authentication authentication) {
+        projectAccess.requireAccess(authentication, id);
+        return ui.traceGraph(id, page, size);
+    }
 
     @GetMapping("/projects/{id}/findings")
     public Object findings(@PathVariable UUID id, Authentication authentication) {
@@ -340,13 +444,19 @@ public class UgnayApiController {
     @GetMapping("/projects/{id}/completion-package")
     public Object completionPackage(@PathVariable UUID id, Authentication authentication) { projectAccess.requireAccess(authentication, id); return workspace.completionPackage(id); }
 
+    @GetMapping("/projects/{id}/completion-package/evidence-references")
+    public Object completionEvidenceReferences(@PathVariable UUID id, Authentication authentication) {
+        projectAccess.requireAccess(authentication, id);
+        return workspace.completionEvidenceReferences(id).stream().map(EvidenceReferenceResponse::from).toList();
+    }
+
     @PostMapping("/projects/{id}/analysis-runs")
     @ResponseStatus(HttpStatus.CREATED)
     public Object analyze(@PathVariable UUID id, @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
             Authentication authentication) {
         projectAccess.requireAccess(authentication, id);
         requireVersion(workspace.project(id), ifMatch);
-        return workspace.rerunAnalysis(id);
+        return workspace.rerunAnalysis(id, authentication.getName());
     }
 
     @PostMapping("/projects/{id}/trace-items")
@@ -415,11 +525,24 @@ public class UgnayApiController {
             @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch, Authentication principal) {
         projectAccess.requireAccess(principal, id);
         requireVersion(workspace.project(id), ifMatch);
-        var criteria = request.criteria().stream().map(value -> new WorkspaceService.CriterionEvidence(
-                value.key(), value.completion(), value.explanation())).toList();
-        var result = workspace.updateCompletionEvidence(id, request.codeDataRightsConfirmed(), request.repositoryUrl(),
+        var references = request.evidenceReferences() == null ? List.<WorkspaceService.EvidenceReferenceInput>of()
+                : request.evidenceReferences().stream().map(value -> new WorkspaceService.EvidenceReferenceInput(
+                        value.type(), value.label(), value.location(), value.storedDocumentId(), value.sha256())).toList();
+        var result = workspace.updateCompletionEvidence(id, request.repositoryUrl(),
                 request.commitHash(), request.setupInstructions(), request.limitations(), request.recommendations(),
-                request.unfinishedWork(), criteria, principal.getName());
+                request.unfinishedWork(), references, principal.getName());
+        return ResponseEntity.ok().eTag(etag(result.project().rowVersion())).body(result);
+    }
+
+    @PostMapping("/projects/{id}/completion-package/evidence-references/{referenceId}/verification")
+    @PreAuthorize("hasAnyRole('ADVISER','COORDINATOR','REVIEWER')")
+    public ResponseEntity<Object> verifyCompletionEvidence(@PathVariable UUID id, @PathVariable UUID referenceId,
+            @Valid @RequestBody EvidenceVerificationRequest request,
+            @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch, Authentication principal) {
+        projectAccess.requireAccess(principal, id);
+        requireVersion(workspace.project(id), ifMatch);
+        var result = workspace.verifyCompletionReference(id, referenceId, request.verificationState(),
+                request.notes(), principal.getName());
         return ResponseEntity.ok().eTag(etag(result.project().rowVersion())).body(result);
     }
 
@@ -442,7 +565,12 @@ public class UgnayApiController {
     }
 
     @GetMapping("/change-requests")
-    public List<ChangeRequest> changes() { return workspace.changes(); }
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<List<ChangeRequest>> changes(Authentication authentication,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "50") int size) {
+        return paged(workspace.changes().stream()
+                .filter(change -> projectAccess.canAccess(authentication, change.projectId())).toList(), page, size);
+    }
 
     @PostMapping("/change-requests")
     public ResponseEntity<ChangeRequest> createChange(@Valid @RequestBody ChangeInput request,
@@ -451,7 +579,7 @@ public class UgnayApiController {
         projectAccess.requireAccess(authentication, request.projectId());
         requireVersion(project, ifMatch);
         ChangeRequest created = workspace.createChange(request.projectId(), request.basedOnBaselineId(), request.title(),
-                request.rationale(), request.changedItemIds(), request.boundaryFlags());
+                request.rationale(), request.changedItemIds(), request.boundaryFlags(), authentication.getName());
         return ResponseEntity.created(URI.create("/api/v1/change-requests/" + created.id())).eTag(etag(created.rowVersion())).body(created);
     }
 
@@ -466,7 +594,7 @@ public class UgnayApiController {
         ChangeRequest change = workspace.change(id);
         projectAccess.requireAccess(authentication, change.projectId());
         requireVersion(workspace.project(change.projectId()), ifMatch);
-        return workspace.previewImpact(id);
+        return workspace.previewImpact(id, authentication.getName());
     }
 
     @GetMapping("/change-requests/{id}/impact")
@@ -507,6 +635,14 @@ public class UgnayApiController {
             case "return-for-revision" -> ChangeDecisionDisposition.RETURN_FOR_REVISION;
             default -> throw new IllegalArgumentException("Change action must approve, reject, or return-for-revision.");
         };
+        if (disposition == ChangeDecisionDisposition.APPROVE) {
+            if (request.operationSetVersion() == null) {
+                throw new IllegalArgumentException("Approval requires the operation-set version returned by the current impact preview.");
+            }
+            if (request.operationSetVersion() != actions.operationSetVersion(id)) {
+                throw new IllegalArgumentException("The typed operation set changed; calculate and review a new impact preview.");
+            }
+        }
         var result = workspace.decideChange(id, disposition, actions.changeOperations(id), request.rationale(), principal.getName());
         UUID baseline = disposition == ChangeDecisionDisposition.APPROVE ? result.project().currentBaselineId() : null;
         actions.changeDecision(id, disposition, request.rationale(), baseline, principal.getName());
@@ -514,9 +650,18 @@ public class UgnayApiController {
     }
 
     @GetMapping("/continuation-items")
-    public Object continuationItems(Authentication authentication) {
-        return workspace.studies().stream().filter(study -> isCurator(authentication) || !restricted(study))
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<List<com.ugnay.platform.shared.PlatformModels.ContinuationItem>> continuationItems(
+            @RequestParam UUID projectId, @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "50") int size, Authentication authentication) {
+        projectAccess.requireAccess(authentication, projectId);
+        Set<UUID> predecessorIds = workspace.lineage(projectId).nodes().stream()
+                .filter(node -> "STUDY".equals(node.kind())).map(com.ugnay.platform.shared.PlatformModels.LineageNode::id)
+                .collect(java.util.stream.Collectors.toSet());
+        List<com.ugnay.platform.shared.PlatformModels.ContinuationItem> items = workspace.studies().stream().filter(study -> predecessorIds.contains(study.id()))
+                .filter(study -> studyVisibility.canView(authentication, study.visibility(), study.department()))
                 .flatMap(study -> study.continuationItems().stream()).toList();
+        return paged(items, page, size);
     }
 
     @PostMapping("/projects/{id}/continuation-claims")
@@ -540,13 +685,58 @@ public class UgnayApiController {
     }
 
     @PostMapping("/lineage/check")
-    public Object checkLineage(@Valid @RequestBody LineageCheck request) {
+    public Object checkLineage(@Valid @RequestBody LineageCheck request, Authentication authentication) {
+        projectAccess.requireAccess(authentication, request.projectId());
         boolean cycle = workspace.wouldCreateLineageCycle(request.projectId(), request.sourceId(), request.targetId());
         return Map.of("valid", !cycle, "wouldCreateCycle", cycle, "lineageType", request.lineageType());
     }
 
     @GetMapping("/review-queue")
-    public Object reviewQueue() { return workspace.reviewQueue(); }
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Void> reviewQueue(@RequestParam UUID projectId, Authentication authentication) {
+        projectAccess.requireAccess(authentication, projectId);
+        return ResponseEntity.status(HttpStatus.PERMANENT_REDIRECT)
+                .location(URI.create("/api/v1/projects/" + projectId + "/reviews")).build();
+    }
+
+    @GetMapping("/projects/{id}/reviews")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<List<JdbcWorkspaceStore.ResearchReviewRecord>> projectReviews(@PathVariable UUID id,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "50") int size,
+            Authentication authentication) {
+        projectAccess.requireAccess(authentication, id);
+        return paged(workspace.researchReviews(id), page, size);
+    }
+
+    @PostMapping("/projects/{id}/reviews/{reviewId}/revision-requests")
+    @PreAuthorize("hasAnyRole('ADVISER','COORDINATOR','REVIEWER')")
+    public ResponseEntity<Object> requestReviewRevision(@PathVariable UUID id, @PathVariable UUID reviewId,
+            @Valid @RequestBody ReviewMessageRequest request,
+            @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch, Authentication principal) {
+        projectAccess.requireAccess(principal, id);
+        requireVersion(workspace.project(id), ifMatch);
+        var review = workspace.researchReview(id, reviewId);
+        String requiredAuthority = "ROLE_" + review.requiredRole();
+        boolean allowed = principal.getAuthorities().stream().anyMatch(authority ->
+                "ROLE_COORDINATOR".equals(authority.getAuthority()) || requiredAuthority.equals(authority.getAuthority()));
+        if (!allowed) throw new org.springframework.security.access.AccessDeniedException(
+                "This review requires the persisted " + review.requiredRole() + " academic role.");
+        var result = workspace.appendReviewEvent(id, reviewId, "REVISION_REQUESTED", request.message(),
+                request.evidenceLocation(), principal.getName());
+        return ResponseEntity.ok().eTag(etag(result.project().rowVersion())).body(result);
+    }
+
+    @PostMapping("/projects/{id}/reviews/{reviewId}/revision-responses")
+    @PreAuthorize("hasAnyRole('STUDENT','ADVISER','COORDINATOR')")
+    public ResponseEntity<Object> respondToReviewRevision(@PathVariable UUID id, @PathVariable UUID reviewId,
+            @Valid @RequestBody ReviewMessageRequest request,
+            @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch, Authentication principal) {
+        projectAccess.requireAccess(principal, id);
+        requireVersion(workspace.project(id), ifMatch);
+        var result = workspace.appendReviewEvent(id, reviewId, "REVISION_RESPONDED", request.message(),
+                request.evidenceLocation(), principal.getName());
+        return ResponseEntity.ok().eTag(etag(result.project().rowVersion())).body(result);
+    }
 
     @GetMapping("/algorithm-disclosure")
     public Object algorithmDisclosure() { return workspace.algorithmDisclosure(); }
@@ -597,18 +787,12 @@ public class UgnayApiController {
 
     private DiscoveryRun authorizedDiscovery(DiscoveryRun run, Authentication authentication) {
         if (isCurator(authentication)) return run;
-        List<DiscoveryCandidate> candidates = run.candidates().stream().map(candidate -> {
+        List<DiscoveryCandidate> candidates = run.candidates().stream().filter(candidate -> {
             Study study = workspace.study(candidate.studyId());
-            if (!restricted(study)) return candidate;
-            List<CandidateEvidence> evidence = candidate.evidence().stream().map(item -> new CandidateEvidence(
-                    item.field(), item.proposalExcerpt(), "Restricted evidence excerpt.",
-                    item.components().stream().map(component -> new ComponentScore(component.component(), component.rawScore(),
-                            component.weight(), component.weightedScore(), component.explanation(), List.of())).toList())).toList();
-            return new DiscoveryCandidate(candidate.rank(), candidate.studyId(), candidate.studyTitle(), candidate.problemScore(),
-                    candidate.objectiveScore(), candidate.solutionScore(), candidate.confidence(), candidate.similarityBand(),
-                    candidate.exactMatch(), evidence);
+            return studyVisibility.canView(authentication, study.visibility(), study.department());
         }).toList();
-        return new DiscoveryRun(run.id(), run.proposalId(), run.assessmentStatus(), run.recommendation(), run.confidence(),
+        return new DiscoveryRun(run.id(), run.proposalId(), run.assessmentStatus(), run.recommendation(),
+                run.confidenceState(), run.confidence(),
                 run.algorithmVersion(), run.inputHash(), run.semanticProvider(), run.explanation(), run.revisionChecklist(),
                 candidates, run.createdAt());
     }
@@ -620,6 +804,25 @@ public class UgnayApiController {
     private static boolean isCurator(Authentication authentication) {
         return authentication != null && authentication.getAuthorities().stream()
                 .anyMatch(authority -> authority.getAuthority().equals("ROLE_CURATOR"));
+    }
+
+    private static <T> ResponseEntity<List<T>> paged(List<T> values, int page, int size) {
+        if (page < 0) throw new IllegalArgumentException("Page must be zero or greater.");
+        if (size < 1 || size > 100) throw new IllegalArgumentException("Page size must be from 1 to 100.");
+        int total = values.size();
+        int from = (int) Math.min(total, (long) page * size);
+        int to = Math.min(total, from + size);
+        List<T> content = values.subList(from, to);
+        return ResponseEntity.ok().headers(pageHeaders(page, size, total, content.size())).body(content);
+    }
+
+    private static HttpHeaders pageHeaders(int page, int size, int total, int returned) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-Page", Integer.toString(page));
+        headers.set("X-Page-Size", Integer.toString(size));
+        headers.set("X-Total-Count", Integer.toString(total));
+        headers.set("X-Truncated", Boolean.toString((long) page * size > 0 || returned < total));
+        return headers;
     }
 
     public record StudyImportRequest(
@@ -649,11 +852,34 @@ public class UgnayApiController {
             @NotNull UUID problemId, @NotBlank String title, @NotEmpty List<@NotBlank String> objectives,
             @NotBlank String proposedSolution, String methodology, String dataSources, String technology, String intendedUsers) {}
 
-    public record DiscoveryRequest(
-            UUID proposalId, String title, String problemStatement, String stakeholder, String affectedUsers,
-            String siteContext, String desiredOutcome, String constraints, String privacyClassification,
-            List<String> objectives, String proposedSolution, String methodology, String dataSources,
-            String technology, String intendedUsers, List<String> stakeholders, List<String> domainTerms) {}
+    public record IntakeRequest(@NotNull @Valid IntakeProblemRequest problem, @NotNull @Valid IntakeProposalRequest proposal,
+            List<@Valid EvidenceReferenceRequest> evidenceReferences) {}
+    public record IntakeProblemRequest(
+            @NotBlank @Size(max = 400) String title, @NotBlank @Size(min = 40) String problemStatement,
+            @NotBlank String stakeholder, @NotBlank String affectedUsers, @NotBlank String siteContext,
+            @NotBlank String desiredOutcome, String constraints, @NotBlank String privacyClassification) {}
+    public record IntakeProposalRequest(
+            @NotBlank @Size(max = 500) String title, @NotEmpty List<@NotBlank String> objectives,
+            @NotBlank String proposedSolution, String methodology, String dataSources, String technology,
+            String intendedUsers) {}
+    public record EvidenceReferenceRequest(
+            @NotBlank String type, @NotBlank @Size(max = 300) String label, @Size(max = 1000) String location,
+            UUID storedDocumentId, String sha256) {}
+    public record EvidenceReferenceResponse(UUID id, String type, String label, String location, UUID storedDocumentId,
+            String sha256, String verificationState, Instant capturedAt) {
+        static EvidenceReferenceResponse from(JdbcWorkspaceStore.EvidenceReferenceRecord value) {
+            return new EvidenceReferenceResponse(value.id(), value.type(), value.label(), value.location(), value.documentId(),
+                    value.sha256(), value.verificationState(), value.capturedAt());
+        }
+    }
+    public record IntakeResponse(String idempotencyKey, boolean replayed, ProblemCase problem, Proposal proposal,
+            UiContracts.DiscoveryView discovery, List<JdbcWorkspaceStore.EvidenceReferenceRecord> evidenceReferences) {}
+
+    public record DiscoveryRequest(@NotNull UUID proposalId) {}
+
+    public record DecisionContext(Proposal proposal, List<JdbcWorkspaceStore.ProposalObjectiveRecord> proposalObjectives,
+            DiscoveryRun discovery, List<UiContracts.StudyView> candidateStudies, ProposalDecision decision,
+            List<WorkflowActionService.AdviserRecommendation> adviserRecommendations) {}
 
     public record DecisionRequest(
             @NotNull UUID proposalId, @NotNull UUID discoveryRunId, @NotNull DecisionDisposition disposition,
@@ -672,7 +898,7 @@ public class UgnayApiController {
     public record MembershipRequest(@NotNull UUID userId, @NotBlank String role) {}
 
     public record ChangeInput(
-            @NotNull UUID projectId, UUID basedOnBaselineId, @NotBlank String title,
+            @NotNull UUID projectId, @NotNull UUID basedOnBaselineId, @NotBlank String title,
             @NotBlank @Size(min = 20) String rationale, @NotEmpty List<UUID> changedItemIds, List<String> boundaryFlags) {}
     public record ChangeOperationRequest(
             @NotNull ChangeOperationType type, UUID targetItemId,
@@ -680,7 +906,7 @@ public class UgnayApiController {
             String description, String priority, String acceptanceCriteria, String verificationMethod,
             UUID sourceItemId, UUID linkTargetItemId, String relationshipType, boolean removeRelationship,
             @NotBlank @Size(min = 10) String rationale) {}
-    public record ChangeDecisionRequest(@NotBlank @Size(min = 20) String rationale) {}
+    public record ChangeDecisionRequest(@NotBlank @Size(min = 20) String rationale, Long operationSetVersion) {}
     public record ContinuationClaimRequest(@NotNull UUID continuationItemId, @NotNull UUID successorObjectiveId,
             @NotBlank @Size(min = 12) String rationale) {}
     public record ContinuationOutcomeRequest(@NotNull ContinuationClaimOutcome outcome, @NotBlank @Size(min = 12) String summary,
@@ -704,11 +930,15 @@ public class UgnayApiController {
             boolean evidenceConfirmed) {}
     public record BaselineApprovalRequest(@NotBlank @Size(min = 20) String rationale) {}
     public record CompletionEvidenceRequest(
-            boolean codeDataRightsConfirmed, @NotBlank @Size(max = 700) String repositoryUrl,
-            @NotBlank @Size(max = 80) String commitHash, @NotBlank String setupInstructions,
+            @Size(max = 700) String repositoryUrl,
+            @Size(max = 80) String commitHash, String setupInstructions,
             List<@NotBlank String> limitations, List<@NotBlank String> recommendations,
-            List<@NotBlank String> unfinishedWork, @NotEmpty List<@Valid CriterionEvidenceRequest> criteria) {}
-    public record CriterionEvidenceRequest(
-            @NotBlank String key, @DecimalMin("0.0") @DecimalMax("1.0") double completion,
-            @NotBlank String explanation) {}
+            List<@NotBlank String> unfinishedWork, List<@Valid CompletionEvidenceReferenceRequest> evidenceReferences) {}
+    public record CompletionEvidenceReferenceRequest(
+            @NotBlank String type, @NotBlank @Size(max = 300) String label, @Size(max = 1000) String location,
+            UUID storedDocumentId, String sha256) {}
+    public record EvidenceVerificationRequest(@NotBlank String verificationState,
+            @NotBlank @Size(min = 20, max = 1000) String notes) {}
+    public record ReviewMessageRequest(@NotBlank @Size(min = 20, max = 2000) String message,
+            @Size(max = 1000) String evidenceLocation) {}
 }

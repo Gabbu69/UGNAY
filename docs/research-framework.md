@@ -37,11 +37,11 @@ The platform continues to support intake, adviser/coordinator routing, traceabil
 
 A curator creates a draft dataset version from selected catalogue study IDs, or the current catalogue when no selection is supplied. UGNAY copies each study's structured metadata/profile into `evaluation_corpus_items`, records its profile SHA-256, fixes item order, and hashes the corpus. Later edits to operational catalogue rows do not change this experimental version.
 
-The maximum corpus size is 10,000 studies. A dataset cannot be empty.
+The absolute maximum corpus size is 10,000 studies; the Windows Lite profile caps a corpus at 2,000. A dataset cannot be empty, and the active profile's bound is returned as a validation error rather than silently truncating the frozen corpus.
 
 ### 2. Author one structured query set
 
-Each query has a stable external key, `DEV` or `TEST` split, title, and optional problem, objectives, solution, methodology, data-source, technology, intended-user, stakeholder, and site-context fields. The complete structured snapshot and query SHA-256 are persisted. A dataset supports at most 500 queries.
+Each query has a stable external key, `DEV` or `TEST` split, title, and optional problem, objectives, solution, methodology, data-source, technology, intended-user, stakeholder, and site-context fields. The complete structured snapshot and query SHA-256 are persisted. The absolute limit is 500 queries; Windows Lite permits 100 per dataset.
 
 Every retrieval arm receives the same combined query profile. Hybrid retrieval additionally uses the frozen field structure recorded in that same snapshot; it does not receive a different proposal.
 
@@ -77,7 +77,7 @@ Starting a comparison returns `202 Accepted`. The durable worker requeues interr
 
 BM25 is deliberately not an arm in this release; TF-IDF supplies the requested corpus-aware lexical comparison without introducing another unvalidated implementation. Exact-title or identifier safety signals remain part of production discovery and are excluded from the pure four-arm comparison.
 
-Every ranking uses study UUID ascending as the deterministic tie-break. Evaluation retains only the first ten hits because the declared cutoffs end at ten. A run records one warm-up and five timed repetitions, a deterministic seed, code build, algorithm configuration hashes, model/provider status, database/JVM/OS/CPU/core/max-heap details, cache policy, and environment/run hashes.
+Every ranking uses study UUID ascending as the deterministic tie-break. Evaluation retains only the first ten hits because the declared cutoffs end at ten. A run records one warm-up and a profile-controlled number of timed repetitions (three on Windows Lite; five by default elsewhere), a deterministic seed, code build, algorithm configuration hashes, model/provider status, database/JVM/OS/CPU/core/max-heap details, cache policy, and environment/run hashes.
 
 ### 6. Calculate and retain metrics
 

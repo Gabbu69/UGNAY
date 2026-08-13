@@ -52,6 +52,19 @@ The persistent bootstrap administrator may perform every role in a local demo. O
 | INT8 inference | The separately supplied release INT8 model and tokenizer produced a normalized 384-dimensional vector in the focused Java test |
 | Static contracts | Every PowerShell script parses; JSON, Compose YAML, Markdown links, and OpenAPI structural lint pass |
 
+## Current source verification — 2026-08-13
+
+These results apply to this checkout and current development machine. They are not evidence of physical Pentium/4 GB acceptance.
+
+| Gate | Observed result |
+|---|---|
+| Frontend | Vitest passed 13 files / 40 tests; ESLint and TypeScript/Vite production build passed |
+| Java backend | Maven passed 124 tests with zero failures/errors; one externally supplied INT8 test was skipped in the ordinary suite |
+| INT8 assets | Focused test passed with the checksummed release model and tokenizer and produced the expected 384-dimensional embedding |
+| Static contracts | `scripts/verify.ps1 -SkipDocker` passed five gates with zero failures; all PowerShell, JSON, Compose, links, and OpenAPI checks passed (the canonical 308-only redirect produces one documented lint warning) |
+| Frontend budget | Entry JavaScript is 141.72 KiB gzip; Cytoscape is isolated to the lazy Graph chunk; ECharts is absent; exactly three Latin WOFF2 fonts are emitted |
+| Local infrastructure | Docker and local MySQL were unavailable and were not counted as passed; GitHub Actions must prove the packaged MySQL 8.4 boot |
+
 | Target or pending | Required evidence still missing |
 |---|---|
 | Windows Lite physical acceptance | Complete a clean release install, offline restart, Defender scan, backup/restore, failed-update rollback, and memory/timing capture on the actual 4 GB Pentium laptop |
@@ -82,7 +95,8 @@ The following rows are release acceptance conditions. Unless a row is explicitly
 | Verification | Coverage is requirement-based; duplicate tests do not inflate it; changed targets make evidence stale |
 | Scope | No baseline returns `UNASSESSED`; approved expansion is “controlled growth pressure,” not scope creep |
 | Change | Preview returns each impacted record once with path and severity; stale-baseline requests require recalculation |
-| Completion | Continuity Package Studio records structured handoff evidence; Must verification, weighted coverage, outputs, findings, exceptions, rights, and readiness gate coordinator-only completion |
+| Completion | Continuity Package Studio appends typed references; server-derived assessed values omit missing numbers; independent verification, Must tests, outputs, findings, exceptions, rights, and readiness gate coordinator-only completion |
+| Project review | Revision request and response append actor-attributed history under the canonical project route; fresh ETags reject stale mutations |
 | Continuity | Completion creates one study; claims do not rewrite predecessors; self/ancestor lineage cycles fail |
 | Accessibility | All graph information has a keyboard-operable table/matrix and screen-reader summary |
 
@@ -132,8 +146,17 @@ These are targets only. Until the real dataset is frozen and executed, the Resea
 
 - Warm hybrid discovery under three seconds at p95 for 10,000 studies.
 - Trace analysis under two seconds for a 1,000-node project.
+- On the physical Pentium/4 GB laptop, application health is available within 90 seconds.
+- On that same laptop, a 60-minute defense walkthrough completes without an out-of-memory exit or sustained page-file thrashing.
 - PDF extraction stays asynchronous and never holds the upload request open for parser completion.
 - Graph views request a filtered neighborhood, not an entire corpus.
+
+### Browser and response matrix
+
+- Verify keyboard navigation, reduced motion, and 200% zoom at `390x844`, `1024x768`, and `1366x768`.
+- Functional text remains at least 14 px, metadata at least 12 px, and primary interactive targets at least 44 px.
+- Large tabular APIs default to 50 rows and expose page/truncation metadata; graph responses cap at 500 nodes/1,000 edges and state truncation explicitly.
+- Confirm in the browser network panel that Cytoscape is not requested until Graph is opened and that ECharts is never requested.
 
 ## Release evidence
 

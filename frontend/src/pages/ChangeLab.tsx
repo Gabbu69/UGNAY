@@ -4,8 +4,8 @@ import { AlertOctagon, Check, GitCommitHorizontal, Plus, ScanLine, ShieldCheck }
 import { useWorkspace } from '../hooks/useWorkspace'
 import { useAuthSession } from '../hooks/useAuthSession'
 import {
-  addChangeOperation, ApiProblem, createChangeRequest, decideChangeRequest, getChangeOperations,
-  getLatestChangeContext, getProjectTraceability, previewLatestChangeImpact,
+  addChangeOperation, ApiProblem, createChangeRequest, decideChangeRequest, getChangeContext, getChangeOperations,
+  getProjectTraceability, listProjectChangeRequests, previewChangeImpact,
   type ChangeDecision, type ChangeOperationInput, type ChangeOperationType,
 } from '../lib/api'
 import type { TraceItemType } from '../types/domain'
@@ -21,13 +21,16 @@ export default function ChangeLab() {
   const { data: auth } = useAuthSession()
   const queryClient = useQueryClient()
   const [operationType, setOperationType] = useState<ChangeOperationType>('REVISE')
+  const [selectedChangeId, setSelectedChangeId] = useState('')
   const project = data?.data.project
   const projectId = project?.id ?? ''
   const roles = auth?.session.roles ?? []
   const isLive = data?.source === 'LIVE' && projectId !== '' && projectId !== 'unavailable'
   const canAuthor = isLive && auth?.session.authenticated === true && roles.some((role) => ['STUDENT', 'ADVISER', 'COORDINATOR'].includes(role))
   const isCoordinator = isLive && auth?.session.authenticated === true && roles.includes('COORDINATOR')
-  const context = useQuery({ queryKey: ['change-context', projectId], queryFn: () => getLatestChangeContext(projectId), enabled: isLive })
+  const changes = useQuery({ queryKey: ['change-requests', projectId], queryFn: () => listProjectChangeRequests(projectId), enabled: isLive })
+  const selectedChange = changes.data?.find((item) => item.id === selectedChangeId)
+  const context = useQuery({ queryKey: ['change-context', projectId, selectedChangeId], queryFn: () => getChangeContext(selectedChange!), enabled: Boolean(selectedChange) })
   const trace = useQuery({ queryKey: ['traceability', projectId], queryFn: () => getProjectTraceability(projectId), enabled: isLive })
   const change = context.data?.change
   const operations = useQuery({
@@ -38,22 +41,23 @@ export default function ChangeLab() {
   const refresh = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['workspace'] }),
-      queryClient.invalidateQueries({ queryKey: ['change-context', projectId] }),
+      queryClient.invalidateQueries({ queryKey: ['change-requests', projectId] }),
+      queryClient.invalidateQueries({ queryKey: ['change-context', projectId, selectedChangeId] }),
       queryClient.invalidateQueries({ queryKey: ['change-operations'] }),
       queryClient.invalidateQueries({ queryKey: ['traceability', projectId] }),
     ])
   }
   const createMutation = useMutation({
     mutationFn: (input: { title: string; rationale: string; itemId: string }) => createChangeRequest(projectId, input.title, input.rationale, input.itemId),
-    onSuccess: refresh,
+    onSuccess: async (created) => { setSelectedChangeId(created.id); await refresh() },
   })
-  const impactMutation = useMutation({ mutationFn: () => previewLatestChangeImpact(projectId), onSuccess: refresh })
+  const impactMutation = useMutation({ mutationFn: () => previewChangeImpact(projectId, selectedChangeId), onSuccess: refresh })
   const operationMutation = useMutation({
     mutationFn: (input: ChangeOperationInput) => addChangeOperation(projectId, change?.id ?? '', input),
     onSuccess: refresh,
   })
   const decisionMutation = useMutation({
-    mutationFn: (input: { decision: ChangeDecision; rationale: string }) => decideChangeRequest(projectId, change?.id ?? '', input.decision, input.rationale),
+    mutationFn: (input: { decision: ChangeDecision; rationale: string }) => decideChangeRequest(projectId, change?.id ?? '', input.decision, input.rationale, context.data?.impact?.operationSetVersion),
     onSuccess: refresh,
   })
 
@@ -79,6 +83,7 @@ export default function ChangeLab() {
     event.preventDefault()
     const fields = new FormData(event.currentTarget)
     const decision = ((event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null)?.value as ChangeDecision | undefined
+    if (decision === 'approve' && !context.data?.impact) return
     if (decision) decisionMutation.mutate({ decision, rationale: String(fields.get('decisionRationale') ?? '') })
   }
   const actionError = [createMutation.error, impactMutation.error, operationMutation.error, decisionMutation.error]
@@ -86,6 +91,7 @@ export default function ChangeLab() {
   const errorDetail = actionError instanceof ApiProblem ? actionError.detail : actionError instanceof Error ? actionError.message : undefined
   const impact = context.data?.impact
   const risk = impact?.scopeRisk
+  const riskAssessed = risk?.status === 'ASSESSED' && risk.score !== null
   const items = trace.data?.items ?? []
   const finalDecision = change && ['APPROVED', 'REJECTED'].includes(change.status)
 
@@ -95,6 +101,8 @@ export default function ChangeLab() {
         description="Author typed changes against an immutable baseline, inspect their blast radius, then record a human decision."
         actions={change && canAuthor && !finalDecision ? <button className="button button-primary" disabled={impactMutation.isPending} onClick={() => impactMutation.mutate()}><ScanLine size={16} /> {impactMutation.isPending ? 'Calculating…' : 'Recalculate impact'}</button> : undefined}
         meta={<><StatusPill tone={change ? 'amber' : 'violet'}>{change?.status ?? 'UNASSESSED'}</StatusPill><span>{change?.basedOnBaselineId ? `Baseline ${change.basedOnBaselineId.slice(0, 8)}` : 'No baseline-bound request selected'}</span></>} />
+
+      <section className="paper-panel decision-context-selector"><div className="section-heading compact"><div><span>AUTHORITATIVE REQUEST SELECTION</span><h2>Choose the persisted change request</h2></div><StatusPill tone={change ? 'teal' : 'amber'}>{change ? 'Exact request loaded' : 'Selection required'}</StatusPill></div><div className="decision-context-fields"><label><span>Project change request</span><select value={selectedChangeId} onChange={(event) => setSelectedChangeId(event.target.value)} disabled={changes.isPending || !changes.data?.length}><option value="">{changes.data?.length ? 'Select a request...' : 'No persisted request available'}</option>{changes.data?.map((item) => <option key={item.id} value={item.id}>{item.title} · {item.status} · {item.id.slice(0, 8)}</option>)}</select></label></div><p>No latest or first request is selected automatically.</p></section>
 
       {errorDetail ? <div className="recorded-banner" role="alert"><AlertOctagon size={20} /><div><strong>The workflow was not changed</strong><span>{errorDetail}</span></div></div> : null}
       {createMutation.isSuccess || operationMutation.isSuccess || decisionMutation.isSuccess || impactMutation.isSuccess ? <div className="recorded-banner" role="status"><Check size={20} /><div><strong>Persisted change workflow updated</strong><span>UGNAY refreshed the selected request, baseline version, impact, and project evidence.</span></div></div> : null}
@@ -124,10 +132,10 @@ export default function ChangeLab() {
           </form>
         </section> : null}
 
-        <div className="change-grid"><section className="impact-map panel-dark"><div className="panel-heading on-dark"><div><span>BLAST RADIUS</span><h2>{impact ? `${impact.impactedArtifacts.length} artifacts need attention` : 'Run impact analysis to assess this request'}</h2></div><StatusPill tone="coral">{impact?.impactedArtifacts.filter((item) => item.evidenceBecomesStale).length ?? 0} evidence paths stale</StatusPill></div><div className="impact-origin"><span>CHANGE</span><strong>{change.title}</strong><small>{change.boundaryFlags.length ? change.boundaryFlags.join(', ') : 'No unresolved boundary flags recorded'}</small></div><div className="impact-columns">{(['OBJECTIVE', 'REQUIREMENT', 'FEATURE', 'TEST_CASE', 'OUTPUT'] as const).map((type, column) => <div key={type}><span>{type.replace('_', ' ')}</span>{impact?.impactedArtifacts.filter((item) => item.itemType === type).map((item) => <div key={item.itemId} className="impact-node"><i>{column + 1}</i><p><b>{item.itemKey}</b>{item.title}<small>{item.hopCount} hops — {item.reason}</small></p></div>)}</div>)}</div><p className="impact-note"><GitCommitHorizontal size={15} /> Cycle-safe traversal; each persisted artifact appears once.</p></section>
-          <aside className="scope-card paper-panel" aria-label="Scope risk assessment"><span className="panel-overline">SCOPE RISK</span><div className="scope-score"><strong>{risk?.score ?? '—'}</strong><div>{risk?.band ? <RiskPill level={risk.band as 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL'} /> : <StatusPill tone="violet">UNASSESSED</StatusPill>}<p>{risk?.explanations.join(' ') || 'No current impact analysis is available.'}</p></div></div><div className="scope-breakdown">{[['Governance', risk?.governance, 35], ['Alignment', risk?.alignment, 25], ['Controlled growth', risk?.controlledGrowth, 20], ['Boundary', risk?.boundary, 20]].map(([label, score, max]) => <div key={String(label)}><span>{label}</span><i><b style={{ width: `${Number(score ?? 0) / Number(max) * 100}%` }} /></i><strong>{score ?? 0}/{max}</strong></div>)}</div>{impact && !impact.baselineCurrent ? <div className="critical-floor"><AlertOctagon size={17} /><p><b>Recalculation required</b><br />This request is not based on the current baseline and cannot be approved.</p></div> : null}</aside></div>
+        <div className="change-grid"><section className="impact-map panel-dark"><div className="panel-heading on-dark"><div><span>BLAST RADIUS {impact ? `· OPERATION SET v${impact.operationSetVersion}` : ''}</span><h2>{impact ? `${impact.impactedArtifacts.length} artifacts need attention` : 'Run impact analysis to assess this request'}</h2></div><StatusPill tone={impact ? 'coral' : 'amber'}>{impact ? `${impact.impactedArtifacts.filter((item) => item.evidenceBecomesStale).length} evidence paths stale` : 'UNASSESSED'}</StatusPill></div><div className="impact-origin"><span>CHANGE</span><strong>{change.title}</strong><small>{change.boundaryFlags.length ? change.boundaryFlags.join(', ') : 'No unresolved boundary flags recorded'}</small></div><div className="impact-columns">{(['OBJECTIVE', 'REQUIREMENT', 'FEATURE', 'TEST_CASE', 'OUTPUT'] as const).map((type, column) => <div key={type}><span>{type.replace('_', ' ')}</span>{impact?.impactedArtifacts.filter((item) => item.itemType === type).map((item) => <div key={item.itemId} className="impact-node"><i>{column + 1}</i><p><b>{item.itemKey}</b>{item.title}<small>{item.hopCount} hops — {item.reason}</small></p></div>)}</div>)}</div><p className="impact-note"><GitCommitHorizontal size={15} /> Cycle-safe traversal; each persisted artifact appears once.</p></section>
+          <aside className="scope-card paper-panel" aria-label="Scope risk assessment"><span className="panel-overline">SCOPE RISK · {risk?.status ?? 'UNASSESSED'}</span><div className="scope-score"><strong>{riskAssessed ? risk.score : '—'}</strong><div>{riskAssessed && risk.band ? <RiskPill level={risk.band as 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL'} /> : <StatusPill tone="violet">{risk?.status ?? 'UNASSESSED'}</StatusPill>}<p>{riskAssessed ? risk.explanations.join(' ') || 'No scope-risk explanation was recorded.' : 'No assessed scope-risk value or component score is available.'}</p></div></div><div className="scope-breakdown">{[['Governance', risk?.governance, 35], ['Alignment', risk?.alignment, 25], ['Controlled growth', risk?.controlledGrowth, 20], ['Boundary', risk?.boundary, 20]].map(([label, score, max]) => { const assessed = riskAssessed && typeof score === 'number'; return <div key={String(label)}><span>{label}</span><i>{assessed ? <b style={{ width: `${Number(score) / Number(max) * 100}%` }} /> : null}</i><strong>{assessed ? `${score}/${max}` : '—'}</strong></div> })}</div>{impact && !impact.baselineCurrent ? <div className="critical-floor"><AlertOctagon size={17} /><p><b>Recalculation required</b><br />This request is not based on the current baseline and cannot be approved.</p></div> : null}</aside></div>
 
-        {!finalDecision && isCoordinator ? <section className="paper-panel change-decision-panel"><ShieldCheck size={21} /><div><span>COORDINATOR DECISION</span><h2>Record the controlled-change disposition</h2><p>Approval requires a current impact preview and at least one valid typed operation.</p></div><form onSubmit={decide}><textarea name="decisionRationale" required minLength={20} placeholder="Record the academic and scope-control basis for this decision." /><div><button type="submit" value="return-for-revision" className="button button-secondary">Return</button><button type="submit" value="reject" className="button button-secondary">Reject</button><button type="submit" value="approve" className="button button-primary">Approve baseline N+1</button></div></form></section> : null}
+        {!finalDecision && isCoordinator ? <section className="paper-panel change-decision-panel"><ShieldCheck size={21} /><div><span>COORDINATOR DECISION</span><h2>Record the controlled-change disposition</h2><p>{impact ? `Approval is bound to operation set v${impact.operationSetVersion} · ${impact.operationSetSha256.slice(0, 12)}…` : 'Run a current impact preview before approval. Return and Reject remain available.'}</p></div><form onSubmit={decide}><textarea name="decisionRationale" required minLength={20} placeholder="Record the academic and scope-control basis for this decision." /><div><button type="submit" value="return-for-revision" className="button button-secondary">Return</button><button type="submit" value="reject" className="button button-secondary">Reject</button><button type="submit" value="approve" className="button button-primary" disabled={!impact}>Approve baseline N+1</button></div></form></section> : null}
       </>}
     </div>
   )

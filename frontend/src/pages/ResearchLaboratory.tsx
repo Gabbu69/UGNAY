@@ -1,9 +1,11 @@
+import { lazy, Suspense } from 'react'
 import { BarChart3, Braces, Database, FlaskConical, ShieldCheck } from 'lucide-react'
 import { Link, useLocation } from 'react-router-dom'
-import { EvaluationWorkbench } from '../components/research-lab/EvaluationWorkbench'
-import { QueryWorkbench } from '../components/research-lab/QueryWorkbench'
-import { WarehouseWorkbench } from '../components/research-lab/WarehouseWorkbench'
 import { PageHeader, StatusPill } from '../components/Primitives'
+
+const QueryWorkbench = lazy(() => import('../components/research-lab/QueryWorkbench').then((module) => ({ default: module.QueryWorkbench })))
+const EvaluationWorkbench = lazy(() => import('../components/research-lab/EvaluationWorkbench').then((module) => ({ default: module.EvaluationWorkbench })))
+const WarehouseWorkbench = lazy(() => import('../components/research-lab/WarehouseWorkbench').then((module) => ({ default: module.WarehouseWorkbench })))
 
 const tabs = [
   { path: '/research-lab/query', label: 'Query interpreter', short: 'Query', icon: Braces },
@@ -48,7 +50,9 @@ export default function ResearchLaboratory() {
       </nav>
 
       <div className="lab-workbench">
-        {active === 'query' ? <QueryWorkbench /> : active === 'evaluation' ? <EvaluationWorkbench /> : <WarehouseWorkbench />}
+        <Suspense fallback={<div className="lab-empty" role="status"><FlaskConical size={22} /><div><strong>Loading the selected workbench...</strong><span>Only this research tool is loaded into memory.</span></div></div>}>
+          {active === 'query' ? <QueryWorkbench /> : active === 'evaluation' ? <EvaluationWorkbench /> : <WarehouseWorkbench />}
+        </Suspense>
       </div>
     </div>
   )

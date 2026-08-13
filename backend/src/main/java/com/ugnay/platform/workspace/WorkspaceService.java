@@ -198,12 +198,20 @@ public class WorkspaceService {
     public List<ProblemCase> problems() { return problems.values().stream().sorted(Comparator.comparing(ProblemCase::createdAt).reversed()).toList(); }
     public ProblemCase problem(UUID id) { return required(problems, id, "Problem case"); }
     public List<Proposal> proposals() { return proposals.values().stream().sorted(Comparator.comparing(Proposal::submittedAt).reversed()).toList(); }
+    public List<JdbcWorkspaceStore.ProposalObjectiveRecord> proposalObjectiveRecords(UUID proposalId) {
+        proposal(proposalId);
+        return store.proposalObjectiveRecords(proposalId);
+    }
     public Proposal proposal(UUID id) { return required(proposals, id, "Proposal"); }
     public List<DiscoveryRun> discoveries() { return discoveries.values().stream().sorted(Comparator.comparing(DiscoveryRun::createdAt).reversed()).toList(); }
     public DiscoveryRun discovery(UUID id) { return required(discoveries, id, "Discovery run"); }
     public List<ProposalDecision> decisions() { return decisions.values().stream().sorted(Comparator.comparing(ProposalDecision::decidedAt).reversed()).toList(); }
     public List<Project> projects() { return projects.values().stream().sorted(Comparator.comparing(Project::updatedAt).reversed()).toList(); }
     public Project project(UUID id) { return required(projects, id, "Project"); }
+    public UUID proposalIdForProject(UUID projectId) { return required(projectProposalIds, projectId, "Project proposal"); }
+    public Optional<DiscoveryRun> latestDiscoveryForProposal(UUID proposalId) {
+        return discoveries().stream().filter(run -> run.proposalId().equals(proposalId)).findFirst();
+    }
     public Traceability traceability(UUID projectId) { return required(traces, projectId, "Traceability workspace"); }
     public ProjectHealth health(UUID projectId) { return required(health, projectId, "Project health"); }
     public ScopeRisk scopeRisk(UUID projectId) { return required(scopeRisks, projectId, "Scope risk"); }
@@ -213,6 +221,39 @@ public class WorkspaceService {
     public ChangeRequest change(UUID id) { return required(changes, id, "Change request"); }
     public ImpactPreview impact(UUID changeId) { return required(impacts, changeId, "Impact preview"); }
     public List<ReviewQueueItem> reviewQueue() { return reviewQueue.stream().sorted(Comparator.comparing(ReviewQueueItem::dueAt)).toList(); }
+
+    public List<JdbcWorkspaceStore.ResearchReviewRecord> researchReviews(UUID projectId) {
+        project(projectId);
+        return store.researchReviews(projectId);
+    }
+
+    public JdbcWorkspaceStore.ResearchReviewRecord researchReview(UUID projectId, UUID reviewId) {
+        project(projectId);
+        return store.researchReview(projectId, reviewId);
+    }
+
+    @Transactional
+    public synchronized ReviewActionResult appendReviewEvent(UUID projectId, UUID reviewId, String eventType,
+            String message, String evidenceLocation, String actorEmail) {
+        Project current = editableProject(projectId);
+        var review = store.appendResearchReviewEvent(projectId, reviewId, eventType,
+                requiredText(message, "Review message"), evidenceLocation, actorEmail, Instant.now());
+        Project touched = touchProject(current);
+        audit.append(actorEmail, eventType, "RESEARCH_REVIEW", reviewId,
+                "Appended an actor-attributed project review event.",
+                Map.of("projectId", projectId.toString(), "reviewStatus", review.status()));
+        return new ReviewActionResult(touched, review);
+    }
+
+    public record ReviewActionResult(Project project, JdbcWorkspaceStore.ResearchReviewRecord review) {}
+
+    void discardRolledBackIntake(UUID problemId, UUID proposalId) {
+        problems.remove(problemId);
+        if (proposalId != null) {
+            proposals.remove(proposalId);
+            proposalProblemIds.remove(proposalId);
+        }
+    }
 
     @Transactional
     public synchronized Study importStudy(String code, String title, String academicYear, String abstractText,
@@ -248,13 +289,31 @@ public class WorkspaceService {
     public synchronized ProblemCase createProblem(String title, String problemStatement, String stakeholder,
                                                   String affectedUsers, String siteContext, String desiredOutcome,
                                                   String constraints, String privacyClassification, int evidenceCount) {
+        return createProblem(title, problemStatement, stakeholder, affectedUsers, siteContext, desiredOutcome,
+                constraints, privacyClassification, evidenceCount, null);
+    }
+
+    @Transactional
+    public synchronized ProblemCase createProblem(String title, String problemStatement, String stakeholder,
+                                                  String affectedUsers, String siteContext, String desiredOutcome,
+                                                  String constraints, String privacyClassification, int evidenceCount,
+                                                  String actorEmail) {
+        return createProblem(title, problemStatement, stakeholder, affectedUsers, siteContext, desiredOutcome,
+                constraints, privacyClassification, evidenceCount, actorEmail, true);
+    }
+
+    @Transactional
+    synchronized ProblemCase createProblem(String title, String problemStatement, String stakeholder,
+                                            String affectedUsers, String siteContext, String desiredOutcome,
+                                            String constraints, String privacyClassification, int evidenceCount,
+                                            String actorEmail, boolean createLegacyEvidenceRows) {
         Instant now = Instant.now();
         ProblemCase problem = new ProblemCase(UUID.randomUUID(), title, problemStatement, stakeholder, affectedUsers,
                 siteContext, desiredOutcome, constraints, privacyClassification, evidenceCount > 0 ? "READY" : "DRAFT",
                 Math.max(0, evidenceCount), now, 0);
         problems.put(problem.id(), problem);
-        store.saveProblem(problem);
-        audit.append(null, "PROBLEM_CREATED", "PROBLEM", problem.id(), "Created a structured problem case.", Map.of("evidenceCount", problem.evidenceCount()));
+        store.saveProblem(problem, actorEmail, createLegacyEvidenceRows);
+        audit.append(actorEmail, "PROBLEM_CREATED", "PROBLEM", problem.id(), "Created a structured problem case.", Map.of("evidenceCount", problem.evidenceCount()));
         return problem;
     }
 
@@ -262,6 +321,14 @@ public class WorkspaceService {
     public synchronized Proposal createProposal(UUID problemId, String title, List<String> objectives,
                                                 String proposedSolution, String methodology, String dataSources,
                                                 String technology, String intendedUsers) {
+        return createProposal(problemId, title, objectives, proposedSolution, methodology, dataSources,
+                technology, intendedUsers, null);
+    }
+
+    @Transactional
+    public synchronized Proposal createProposal(UUID problemId, String title, List<String> objectives,
+                                                String proposedSolution, String methodology, String dataSources,
+                                                String technology, String intendedUsers, String actorEmail) {
         ProblemCase problem = problem(problemId);
         Proposal proposal = new Proposal(UUID.randomUUID(), title, problem.problemStatement(), problem.stakeholder(),
                 problem.affectedUsers(), problem.siteContext(), problem.desiredOutcome(), problem.constraints(),
@@ -269,14 +336,19 @@ public class WorkspaceService {
                 technology, intendedUsers, "SUBMITTED", Instant.now(), 0);
         proposals.put(proposal.id(), proposal);
         proposalProblemIds.put(proposal.id(), problemId);
-        store.saveProposal(proposal, problemId);
-        audit.append(null, "PROPOSAL_SUBMITTED", "PROPOSAL", proposal.id(), "Submitted a proposal for discovery review.", Map.of("problemId", problemId.toString()));
+        store.saveProposal(proposal, problemId, actorEmail);
+        audit.append(actorEmail, "PROPOSAL_SUBMITTED", "PROPOSAL", proposal.id(), "Submitted a proposal for discovery review.", Map.of("problemId", problemId.toString()));
         return proposal;
     }
 
     @Transactional
     public synchronized DiscoveryRun runDiscovery(Proposal input) {
-        if (!seeding && !proposals.containsKey(input.id())) persistDiscoveryInput(input);
+        return runDiscovery(input, null);
+    }
+
+    @Transactional
+    public synchronized DiscoveryRun runDiscovery(Proposal input, String actorEmail) {
+        if (!seeding && !store.proposalExists(input.id())) persistDiscoveryInput(input, actorEmail);
         List<String> checklist = new ArrayList<>(intakeChecklist(input));
         List<DiscoveryCandidate> candidates = seeding ? similarity.rankLexical(input, studies()) : similarity.rank(input, studies());
         DiscoveryCandidate top = candidates.isEmpty() ? null : candidates.getFirst();
@@ -314,8 +386,13 @@ public class WorkspaceService {
                 if (predecessor.continuationItems().stream().noneMatch(item -> "OPEN".equals(item.status()))) {
                     checklist.add("Identify an open limitation, recommendation, or unfinished item on the predecessor.");
                 }
-                if (route.continuationCoverage() < 60) checklist.add("Link at least 60% of proposed objectives to open predecessor continuation items.");
-                if (!route.codeAccess() || !route.dataAccess()) checklist.add("Confirm repository, code, and required data access before approving CONTINUE.");
+                if (route.continuationState() != AssessmentStatus.ASSESSED || route.continuationCoverage() == null
+                        || route.continuationCoverage() < 60) {
+                    checklist.add("Link at least 60% of proposed objectives to open predecessor continuation items.");
+                }
+                if (!Boolean.TRUE.equals(route.codeAccess()) || !Boolean.TRUE.equals(route.dataAccess())) {
+                    checklist.add("Confirm repository, code, and required data access before approving CONTINUE.");
+                }
             } else if (predecessor != null && "COMPLETED".equals(predecessor.lifecycleStatus())
                     && predecessor.continuationItems().stream().anyMatch(item -> item.type().equals("LIMITATION") || item.type().equals("RECOMMENDATION"))) {
                 RoutingEvidenceRepository.RouteAssessment route = routeAssessment(input.id(), predecessor.id());
@@ -333,19 +410,25 @@ public class WorkspaceService {
                 checklist.add("Document the distinct gap or provide the structured predecessor evidence required by the intended route.");
             }
         }
-        double confidence = top == null ? 0 : top.confidence();
-        DiscoveryRun run = new DiscoveryRun(UUID.randomUUID(), input.id(), status, recommendation, confidence,
+        Double confidence = top == null ? null : top.confidence();
+        AssessmentStatus confidenceState = top == null ? AssessmentStatus.UNASSESSED : status;
+        DiscoveryRun run = new DiscoveryRun(UUID.randomUUID(), input.id(), status, recommendation,
+                confidenceState, confidence,
                 algorithmVersion, sha256(input.toString()), similarity.providerName(), explanation,
                 List.copyOf(checklist), candidates, Instant.now());
-        discoveries.put(run.id(), run);
+        if (seeding) discoveries.put(run.id(), run);
+        else afterCommit(() -> discoveries.put(run.id(), run));
         if (!seeding) store.saveDiscovery(run);
-        if (!seeding) audit.append(null, "DISCOVERY_COMPLETED", "DISCOVERY_RUN", run.id(), "Completed explainable research discovery.",
+        if (!seeding) audit.append(actorEmail, "DISCOVERY_COMPLETED", "DISCOVERY_RUN", run.id(), "Completed explainable research discovery.",
                 Map.of("status", status.name(), "recommendation", recommendation.name(), "algorithmVersion", algorithmVersion));
         return run;
     }
 
     @Transactional
     public DiscoveryRun runDiscovery(UUID proposalId) { return runDiscovery(proposal(proposalId)); }
+
+    @Transactional
+    public DiscoveryRun runDiscovery(UUID proposalId, String actorEmail) { return runDiscovery(proposal(proposalId), actorEmail); }
 
     @Transactional
     public synchronized ProposalDecision decide(UUID proposalId, UUID discoveryRunId, DecisionDisposition disposition,
@@ -359,10 +442,19 @@ public class WorkspaceService {
         proposal(proposalId);
         DiscoveryRun run = discovery(discoveryRunId);
         if (!run.proposalId().equals(proposalId)) throw new IllegalArgumentException("Discovery run does not belong to the proposal.");
-        if ((disposition == DecisionDisposition.APPROVE_CONTINUE || disposition == DecisionDisposition.APPROVE_IMPROVE) && predecessorId == null) {
-            throw new IllegalArgumentException("A primary predecessor is required for continue or improve decisions.");
+        if (decisions.values().stream().anyMatch(existing -> existing.proposalId().equals(proposalId))) {
+            throw new IllegalArgumentException("This proposal already has an immutable coordinator decision.");
         }
-        if (predecessorId != null) study(predecessorId);
+        if (Set.of(DecisionDisposition.APPROVE_CONTINUE, DecisionDisposition.APPROVE_IMPROVE,
+                DecisionDisposition.CLOSE_AS_DUPLICATE).contains(disposition) && predecessorId == null) {
+            throw new IllegalArgumentException("A candidate from the frozen discovery run is required for this disposition.");
+        }
+        if (predecessorId != null) {
+            study(predecessorId);
+            if (run.candidates().stream().noneMatch(candidate -> candidate.studyId().equals(predecessorId))) {
+                throw new IllegalArgumentException("The selected candidate is not part of the frozen discovery run.");
+            }
+        }
         if (disposition == DecisionDisposition.APPROVE_CONTINUE
                 && !routeAssessment(proposalId, predecessorId).continuationReady()) {
             throw new IllegalArgumentException("CONTINUE cannot be approved until at least 60% of objectives map to open work and code/data access is confirmed.");
@@ -374,8 +466,8 @@ public class WorkspaceService {
         ProposalDecision decision = new ProposalDecision(UUID.randomUUID(), proposalId, discoveryRunId, disposition,
                 rationale, actorEmail, Instant.now(), predecessorId);
         decisions.put(decision.id(), decision);
-        store.saveDecision(decision);
-        if (approved(disposition)) createProjectFromDecision(decision);
+        store.saveDecision(decision, actorEmail);
+        if (approved(disposition)) createProjectFromDecision(decision, actorEmail);
         audit.append(actorEmail, "PROPOSAL_DECISION_RECORDED", "PROPOSAL", proposalId, "Recorded a human academic routing decision.",
                 Map.of("disposition", disposition.name(), "decisionId", decision.id().toString()));
         return decision;
@@ -383,13 +475,19 @@ public class WorkspaceService {
 
     public RoutingEvidenceRepository.RouteAssessment routeAssessment(UUID proposalId, UUID predecessorId) {
         if (routingEvidence == null || predecessorId == null) {
-            return new RoutingEvidenceRepository.RouteAssessment(false, 0, false, false, false, 0);
+            return new RoutingEvidenceRepository.RouteAssessment(AssessmentStatus.UNASSESSED, null, null, null,
+                    AssessmentStatus.UNASSESSED, null);
         }
         return routingEvidence.assessment(proposalId, predecessorId);
     }
 
     @Transactional
     public synchronized Traceability rerunAnalysis(UUID projectId) {
+        return rerunAnalysis(projectId, null);
+    }
+
+    @Transactional
+    public synchronized Traceability rerunAnalysis(UUID projectId, String actorEmail) {
         Project project = project(projectId);
         Traceability current = traceability(projectId);
         Traceability updated = alignment.analyze(project, current.items(), current.links(), current.executions());
@@ -398,10 +496,10 @@ public class WorkspaceService {
         scopeRisks.put(projectId, risk);
         ProjectHealth updatedHealth = alignment.health(project, updated, risk, packages.get(projectId));
         health.put(projectId, updatedHealth);
-        store.saveTraceability(updated);
+        store.saveTraceability(updated, actorEmail, "Recalculated the current traceability evidence.");
         store.saveScopeRisk(projectId, project.currentBaselineId(), risk, Instant.now());
         store.saveHealth(updatedHealth);
-        audit.append(null, "ALIGNMENT_ANALYSIS_COMPLETED", "PROJECT", projectId, "Recalculated deterministic alignment findings and coverage.",
+        audit.append(actorEmail, "ALIGNMENT_ANALYSIS_COMPLETED", "PROJECT", projectId, "Recalculated deterministic alignment findings and coverage.",
                 Map.of("findingCount", updated.findings().size()));
         return updated;
     }
@@ -426,7 +524,7 @@ public class WorkspaceService {
         List<TraceItem> items = new ArrayList<>(trace.items());
         items.add(created);
         Project touched = touchProject(current);
-        Traceability analyzed = analyzeAndPersist(touched, items, trace.links(), trace.executions());
+        Traceability analyzed = analyzeAndPersist(touched, items, trace.links(), trace.executions(), actorEmail);
         TraceItem persisted = item(analyzed, created.id());
         audit.append(actorEmail, "TRACE_ITEM_CREATED", "TRACE_ITEM", created.id(),
                 "Created a draft trace item in the working evidence chain.", Map.of("projectId", projectId.toString(), "type", type.name()));
@@ -450,7 +548,7 @@ public class WorkspaceService {
                         execution.hasEvidence(), execution.executedAt())
                 : execution).toList();
         Project touched = touchProject(current);
-        Traceability analyzed = analyzeAndPersist(touched, items, trace.links(), executions);
+        Traceability analyzed = analyzeAndPersist(touched, items, trace.links(), executions, actorEmail);
         TraceItem persisted = item(analyzed, itemId);
         audit.append(actorEmail, "TRACE_ITEM_REVISED", "TRACE_ITEM", itemId,
                 "Created a new trace-item revision and invalidated dependent test evidence.",
@@ -480,7 +578,7 @@ public class WorkspaceService {
         List<TraceLink> links = new ArrayList<>(trace.links());
         links.add(created);
         Project touched = touchProject(current);
-        Traceability analyzed = analyzeAndPersist(touched, trace.items(), links, trace.executions());
+        Traceability analyzed = analyzeAndPersist(touched, trace.items(), links, trace.executions(), actorEmail);
         audit.append(actorEmail, "TRACE_LINK_CREATED", "TRACE_LINK", created.id(),
                 "Created a validated same-project typed trace relationship.", Map.of("projectId", projectId.toString(), "type", type));
         return new AuthoringResult<>(touched, created, analyzed);
@@ -510,7 +608,7 @@ public class WorkspaceService {
         }
         executions.add(created);
         Project touched = touchProject(current);
-        Traceability analyzed = analyzeAndPersist(touched, trace.items(), trace.links(), executions);
+        Traceability analyzed = analyzeAndPersist(touched, trace.items(), trace.links(), executions, actorEmail);
         audit.append(actorEmail, "TEST_EXECUTION_RECORDED", "TEST_EXECUTION", created.id(),
                 "Recorded baseline-bound test execution evidence.",
                 Map.of("projectId", projectId.toString(), "status", executionStatus, "evidenceConfirmed", evidenceConfirmed));
@@ -536,7 +634,7 @@ public class WorkspaceService {
         projects.put(projectId, candidateProject);
         store.saveProject(candidateProject, required(projectProposalIds, projectId, "Project proposal"));
         traces.put(projectId, candidate);
-        store.saveTraceability(candidate);
+        store.saveTraceability(candidate, actorEmail, requiredText(rationale, "Approval rationale"));
         ScopeRisk risk = alignment.scopeRisk(candidateProject, candidate, Math.min(20, promoted.size()), 0, List.of());
         scopeRisks.put(projectId, risk);
         store.saveScopeRisk(projectId, baselineId, risk, Instant.now());
@@ -551,51 +649,237 @@ public class WorkspaceService {
 
     @Transactional
     public synchronized AuthoringResult<CompletionPackage> updateCompletionEvidence(UUID projectId,
-            boolean rightsConfirmed, String repositoryUrl, String commitHash, String setupInstructions,
+            String repositoryUrl, String commitHash, String setupInstructions,
             List<String> limitations, List<String> recommendations, List<String> unfinishedWork,
-            List<CriterionEvidence> evidence, String actorEmail) {
+            List<EvidenceReferenceInput> evidenceReferences, String actorEmail) {
         Project current = editableProject(projectId);
         CompletionPackage existing = completionPackage(projectId);
-        Map<String, CriterionEvidence> updates = safeList(evidence).stream().collect(Collectors.toMap(
-                criterion -> criterion.key().strip().toLowerCase(), criterion -> criterion,
-                (left, right) -> { throw new IllegalArgumentException("Completion criterion keys must be unique."); }));
-        if (!updates.keySet().equals(existing.criteria().stream().map(criterion -> criterion.key().toLowerCase()).collect(Collectors.toSet()))) {
-            throw new IllegalArgumentException("Completion evidence must assess every existing readiness criterion exactly once.");
+        List<JdbcWorkspaceStore.EvidenceReferenceRecord> incoming = normalizeEvidenceReferences(evidenceReferences);
+        if (!incoming.isEmpty()) {
+            store.saveEvidenceReferences("COMPLETION_PACKAGE", existing.id(), incoming, actorEmail, Instant.now());
         }
-        List<ContinuityCriterion> criteria = existing.criteria().stream().map(criterion -> {
-            CriterionEvidence update = updates.get(criterion.key().toLowerCase());
-            if (update.completion() < 0 || update.completion() > 1) {
-                throw new IllegalArgumentException("Criterion completion must be between 0 and 1.");
-            }
-            return new ContinuityCriterion(criterion.key(), criterion.label(), criterion.weight(), update.completion(),
-                    requiredText(update.explanation(), "Criterion explanation"));
-        }).toList();
-        String repository = requiredText(repositoryUrl, "Repository URL");
-        String commit = requiredText(commitHash, "Repository commit hash");
-        String setup = requiredText(setupInstructions, "Setup instructions");
-        double readiness = criteria.stream().mapToDouble(criterion -> criterion.weight() * criterion.completion()).sum();
-        List<String> blockers = new ArrayList<>();
-        if (!rightsConfirmed) blockers.add("Confirm code and data rights.");
-        criteria.stream().filter(criterion -> criterion.completion() < 1).forEach(criterion ->
-                blockers.add("Complete continuity criterion: " + criterion.label() + "."));
-        String packageStatus = blockers.isEmpty() ? "READY" : "IN_PROGRESS";
-        CompletionPackage updated = new CompletionPackage(existing.id(), projectId, packageStatus, readiness, rightsConfirmed,
-                criteria, List.copyOf(blockers), repository, commit, setup, safeList(limitations), safeList(recommendations),
-                safeList(unfinishedWork));
+        List<JdbcWorkspaceStore.EvidenceReferenceRecord> persisted = store.evidenceReferences("COMPLETION_PACKAGE", existing.id());
+        CompletionPackage updated = deriveCompletionPackage(current, existing, text(repositoryUrl), text(commitHash),
+                text(setupInstructions), safeList(limitations), safeList(recommendations), safeList(unfinishedWork), persisted);
         packages.put(projectId, updated);
-        store.saveCompletion(updated);
+        store.saveCompletion(updated, actorEmail);
         Project touched = touchProject(current);
         Traceability analyzed = analyzeAndPersist(touched, traceability(projectId).items(), traceability(projectId).links(),
-                traceability(projectId).executions());
+                traceability(projectId).executions(), actorEmail);
+        Map<String, Object> auditDetails = new LinkedHashMap<>();
+        auditDetails.put("projectId", projectId.toString());
+        auditDetails.put("readinessState", updated.readinessState().name());
+        if (updated.readinessScore() != null) auditDetails.put("readiness", updated.readinessScore());
+        auditDetails.put("status", updated.status());
         audit.append(actorEmail, "COMPLETION_EVIDENCE_UPDATED", "COMPLETION_PACKAGE", existing.id(),
-                "Updated structured completion and successor handoff evidence.",
-                Map.of("projectId", projectId.toString(), "readiness", readiness, "status", packageStatus));
+                "Updated structured completion and successor handoff evidence.", auditDetails);
         return new AuthoringResult<>(touched, updated, analyzed);
+    }
+
+    @Transactional
+    public synchronized AuthoringResult<CompletionPackage> verifyCompletionReference(UUID projectId, UUID referenceId,
+            String verificationState, String notes, String actorEmail) {
+        Project current = editableProject(projectId);
+        CompletionPackage existing = completionPackage(projectId);
+        var verified = store.verifyEvidenceReference("COMPLETION_PACKAGE", existing.id(), referenceId,
+                verificationState, requiredText(notes, "Verification notes"), actorEmail, Instant.now());
+        List<JdbcWorkspaceStore.EvidenceReferenceRecord> references = store.evidenceReferences("COMPLETION_PACKAGE", existing.id());
+        CompletionPackage updated = deriveCompletionPackage(current, existing, existing.repositoryUrl(), existing.commitHash(),
+                existing.setupInstructions(), existing.limitations(), existing.recommendations(), existing.unfinishedWork(), references);
+        packages.put(projectId, updated);
+        store.saveCompletion(updated, actorEmail);
+        Project touched = touchProject(current);
+        Traceability analyzed = analyzeAndPersist(touched, traceability(projectId).items(), traceability(projectId).links(),
+                traceability(projectId).executions(), actorEmail);
+        audit.append(actorEmail, "COMPLETION_EVIDENCE_VERIFIED", "EVIDENCE_REFERENCE", referenceId,
+                "Recorded an independent completion-evidence verification.",
+                Map.of("projectId", projectId.toString(), "verificationState", verified.verificationState()));
+        return new AuthoringResult<>(touched, updated, analyzed);
+    }
+
+    public List<JdbcWorkspaceStore.EvidenceReferenceRecord> completionEvidenceReferences(UUID projectId) {
+        CompletionPackage pack = completionPackage(projectId);
+        return store.evidenceReferences("COMPLETION_PACKAGE", pack.id());
+    }
+
+    private CompletionPackage deriveCompletionPackage(Project project, CompletionPackage existing, String repositoryUrl,
+            String commitHash, String setupInstructions, List<String> limitations, List<String> recommendations,
+            List<String> unfinishedWork, List<JdbcWorkspaceStore.EvidenceReferenceRecord> references) {
+        Traceability trace = traceability(project.id());
+        Instant now = Instant.now();
+        Map<UUID, TraceItem> byId = trace.items().stream().collect(Collectors.toMap(TraceItem::id, value -> value));
+
+        boolean tracePreserved = project.currentBaselineId() != null && project.currentBaselineId().equals(trace.baselineId())
+                && !trace.items().isEmpty();
+        ContinuityCriterion traceCriterion = tracePreserved
+                ? assessedCriterion("trace", "Preserved trace and baseline history", 20, "APPROVED_BASELINE_AND_TRACE", now,
+                        "The current immutable baseline and its trace records are persisted.")
+                : unassessedCriterion("trace", "Preserved trace and baseline history", 20,
+                        "No current persisted baseline is available for assessment.");
+
+        List<TraceItem> objectives = trace.items().stream().filter(item -> item.type() == TraceItemType.OBJECTIVE && approvedCurrent(item)).toList();
+        long objectivesWithOutputs = objectives.stream().filter(objective -> !AlignmentAnalyzer.approvedReachableTargets(
+                objective.id(), trace.links(), byId, TraceItemType.OUTPUT).isEmpty()).count();
+        double outputCoverage = objectives.isEmpty() ? 0 : (double) objectivesWithOutputs / objectives.size();
+        boolean verifiedOutput = hasVerifiedReference(references, "OUTPUT", null);
+        boolean anyOutputReference = hasReference(references, "OUTPUT", null);
+        ContinuityCriterion outputCriterion;
+        if (objectives.isEmpty() && !anyOutputReference) {
+            outputCriterion = unassessedCriterion("outputs", "Final documents and outputs", 15,
+                    "No approved objectives or output references are available for assessment.");
+        } else if (outputCoverage == 1 && verifiedOutput) {
+            outputCriterion = assessedCriterion("outputs", "Final documents and outputs", 15,
+                    "TRACE_GRAPH_AND_VERIFIED_OUTPUT_REFERENCE", now,
+                    "Every approved objective reaches an output and an independent output reference is verified.");
+        } else {
+            outputCriterion = partialCriterion("outputs", "Final documents and outputs", 15,
+                    objectives.isEmpty() ? null : outputCoverage, "TRACE_GRAPH_AND_OUTPUT_REFERENCES", now,
+                    verifiedOutput ? "Some approved objectives do not yet reach a final output."
+                            : "Output trace paths require an independently verified output reference.");
+        }
+
+        int repositoryParts = (blank(repositoryUrl) ? 0 : 1) + (blank(commitHash) ? 0 : 1) + (blank(setupInstructions) ? 0 : 1);
+        boolean verifiedRepository = hasVerifiedReference(references, "REPOSITORY", null);
+        boolean anyRepository = hasReference(references, "REPOSITORY", null);
+        ContinuityCriterion repositoryCriterion;
+        if (repositoryParts == 0 && !anyRepository) {
+            repositoryCriterion = unassessedCriterion("repository", "Repository, setup, licence, and access", 20,
+                    "No repository handoff evidence is recorded.");
+        } else if (repositoryParts == 3 && verifiedRepository) {
+            repositoryCriterion = assessedCriterion("repository", "Repository, setup, licence, and access", 20,
+                    "REPOSITORY_FIELDS_AND_VERIFIED_REFERENCE", now,
+                    "Repository revision, setup instructions, and an independently verified reference are present.");
+        } else {
+            repositoryCriterion = partialCriterion("repository", "Repository, setup, licence, and access", 20,
+                    repositoryParts == 0 ? null : repositoryParts / 3.0, "REPOSITORY_FIELDS_AND_REFERENCES", now,
+                    verifiedRepository ? "Repository handoff fields remain incomplete."
+                            : "The repository handoff requires independent verification.");
+        }
+
+        List<TraceItem> mandatoryTests = trace.items().stream().filter(item -> item.type() == TraceItemType.TEST_CASE
+                && "MANDATORY".equals(item.priority()) && approvedCurrent(item)).toList();
+        Map<UUID, TestExecution> latest = trace.executions().stream().collect(Collectors.toMap(TestExecution::testItemId,
+                value -> value, (left, right) -> left.executedAt().isAfter(right.executedAt()) ? left : right));
+        long passingTests = mandatoryTests.stream().filter(test -> {
+            TestExecution execution = latest.get(test.id());
+            return execution != null && execution.current() && "PASSED".equals(execution.status()) && execution.hasEvidence();
+        }).count();
+        double testCoverage = mandatoryTests.isEmpty() ? 0 : (double) passingTests / mandatoryTests.size();
+        boolean verifiedTest = hasVerifiedReference(references, "TEST_RUN", null);
+        boolean anyTestReference = hasReference(references, "TEST_RUN", null);
+        ContinuityCriterion testsCriterion;
+        if (mandatoryTests.isEmpty() && !anyTestReference) {
+            testsCriterion = unassessedCriterion("tests", "Test and evidence snapshot", 15,
+                    "No current mandatory tests or test-run references are available.");
+        } else if (testCoverage == 1 && verifiedTest) {
+            testsCriterion = assessedCriterion("tests", "Test and evidence snapshot", 15,
+                    "CURRENT_TEST_EXECUTIONS_AND_VERIFIED_REFERENCE", now,
+                    "All mandatory tests currently pass with evidence and the test-run reference is independently verified.");
+        } else {
+            testsCriterion = partialCriterion("tests", "Test and evidence snapshot", 15,
+                    mandatoryTests.isEmpty() ? null : testCoverage, "CURRENT_TEST_EXECUTIONS_AND_REFERENCES", now,
+                    verifiedTest ? "Some mandatory tests lack current passing evidence."
+                            : "The current test snapshot requires an independently verified test-run reference.");
+        }
+
+        int futureParts = (limitations.isEmpty() ? 0 : 1) + (recommendations.isEmpty() ? 0 : 1)
+                + (unfinishedWork.isEmpty() ? 0 : 1);
+        ContinuityCriterion futureCriterion = futureParts == 0
+                ? unassessedCriterion("future-work", "Limitations and unfinished work", 15,
+                        "No structured limitations, recommendations, or unfinished work are recorded.")
+                : futureParts == 3
+                    ? assessedCriterion("future-work", "Limitations and unfinished work", 15,
+                            "STRUCTURED_HANDOFF_ITEMS", now,
+                            "Limitations, successor recommendations, and unfinished work are explicitly recorded.")
+                    : partialCriterion("future-work", "Limitations and unfinished work", 15, futureParts / 3.0,
+                            "STRUCTURED_HANDOFF_ITEMS", now,
+                            "Record all three handoff categories: limitations, recommendations, and unfinished work.");
+
+        java.util.function.Predicate<JdbcWorkspaceStore.EvidenceReferenceRecord> rightsPurpose = reference -> {
+            String label = reference.label() == null ? "" : reference.label().toLowerCase();
+            return label.matches(".*(rights|licen[cs]e|ownership|consent|data custodian|access approval).*" );
+        };
+        boolean verifiedRights = hasVerifiedReference(references, null, rightsPurpose);
+        boolean anyRights = hasReference(references, null, rightsPurpose);
+        ContinuityCriterion rightsCriterion = verifiedRights
+                ? assessedCriterion("rights", "Ownership, data access, and contact path", 15,
+                        "VERIFIED_RIGHTS_REFERENCE", now,
+                        "An independent project member verified the recorded rights or access evidence.")
+                : anyRights
+                    ? partialCriterion("rights", "Ownership, data access, and contact path", 15, null,
+                            "RIGHTS_REFERENCE", now, "Rights evidence is recorded but not independently verified.")
+                    : unassessedCriterion("rights", "Ownership, data access, and contact path", 15,
+                            "No rights, ownership, licence, consent, or access-approval reference is recorded.");
+
+        List<ContinuityCriterion> criteria = List.of(traceCriterion, outputCriterion, repositoryCriterion,
+                testsCriterion, futureCriterion, rightsCriterion);
+        boolean ready = criteria.stream().allMatch(value -> value.state() == AssessmentStatus.ASSESSED
+                && value.value() != null && value.value() == 1.0);
+        boolean allNumeric = criteria.stream().allMatch(value -> value.value() != null);
+        Double readiness = allNumeric
+                ? criteria.stream().mapToDouble(value -> value.weight() * value.value()).sum()
+                : null;
+        AssessmentStatus readinessState = ready ? AssessmentStatus.ASSESSED
+                : criteria.stream().allMatch(value -> value.state() == AssessmentStatus.UNASSESSED)
+                    ? AssessmentStatus.UNASSESSED : AssessmentStatus.PARTIAL;
+        List<String> blockers = criteria.stream().filter(value -> value.state() != AssessmentStatus.ASSESSED
+                || value.value() == null || value.value() < 1).map(value -> value.explanation()).distinct().toList();
+        return new CompletionPackage(existing.id(), project.id(), ready ? "READY" : "IN_PROGRESS", readinessState,
+                readiness, verifiedRights, criteria, blockers, repositoryUrl, commitHash, setupInstructions,
+                limitations, recommendations, unfinishedWork);
+    }
+
+    private static List<JdbcWorkspaceStore.EvidenceReferenceRecord> normalizeEvidenceReferences(List<EvidenceReferenceInput> inputs) {
+        Set<String> allowed = Set.of("DOCUMENT", "URL", "REPOSITORY", "OUTPUT", "TEST_RUN", "DATASET", "OTHER");
+        List<JdbcWorkspaceStore.EvidenceReferenceRecord> normalized = new ArrayList<>();
+        for (EvidenceReferenceInput input : safeList(inputs)) {
+            String type = input.type() == null ? "" : input.type().strip().toUpperCase();
+            if (!allowed.contains(type)) throw new IllegalArgumentException("Unsupported completion evidence reference type: " + type + ".");
+            String label = requiredText(input.label(), "Evidence reference label");
+            String location = text(input.location());
+            if (blank(location) && input.documentId() == null) {
+                throw new IllegalArgumentException("An evidence reference requires a location or stored document ID.");
+            }
+            String sha = text(input.sha256()).toLowerCase();
+            if (!blank(sha) && !sha.matches("[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("Evidence SHA-256 must contain exactly 64 hexadecimal characters.");
+            }
+            normalized.add(new JdbcWorkspaceStore.EvidenceReferenceRecord(UUID.randomUUID(), type, label,
+                    blank(location) ? null : location, input.documentId(), blank(sha) ? null : sha,
+                    "UNVERIFIED", Instant.now()));
+        }
+        return List.copyOf(normalized);
+    }
+
+    private static boolean hasVerifiedReference(List<JdbcWorkspaceStore.EvidenceReferenceRecord> references, String type,
+            java.util.function.Predicate<JdbcWorkspaceStore.EvidenceReferenceRecord> purpose) {
+        return safeList(references).stream().anyMatch(reference -> "VERIFIED".equals(reference.verificationState())
+                && (type == null || type.equals(reference.type())) && (purpose == null || purpose.test(reference)));
+    }
+
+    private static boolean hasReference(List<JdbcWorkspaceStore.EvidenceReferenceRecord> references, String type,
+            java.util.function.Predicate<JdbcWorkspaceStore.EvidenceReferenceRecord> purpose) {
+        return safeList(references).stream().anyMatch(reference -> (type == null || type.equals(reference.type()))
+                && (purpose == null || purpose.test(reference)));
+    }
+
+    private static ContinuityCriterion assessedCriterion(String key, String label, int weight, String source,
+            Instant assessedAt, String explanation) {
+        return new ContinuityCriterion(key, label, weight, AssessmentStatus.ASSESSED, 1.0, source, assessedAt, explanation);
+    }
+
+    private static ContinuityCriterion partialCriterion(String key, String label, int weight, Double value, String source,
+            Instant assessedAt, String explanation) {
+        return new ContinuityCriterion(key, label, weight, AssessmentStatus.PARTIAL, value, source, assessedAt, explanation);
+    }
+
+    private static ContinuityCriterion unassessedCriterion(String key, String label, int weight, String explanation) {
+        return new ContinuityCriterion(key, label, weight, AssessmentStatus.UNASSESSED, null, null, null, explanation);
     }
 
     public record AuthoringResult<T>(Project project, T artifact, Traceability traceability) {}
     public record BaselineApprovalResult(Project project, Traceability baseline) {}
-    public record CriterionEvidence(String key, double completion, String explanation) {}
+    public record EvidenceReferenceInput(String type, String label, String location, UUID documentId, String sha256) {}
 
     private Project editableProject(UUID projectId) {
         Project project = project(projectId);
@@ -620,10 +904,10 @@ public class WorkspaceService {
     }
 
     private Traceability analyzeAndPersist(Project project, List<TraceItem> items, List<TraceLink> links,
-            List<TestExecution> executions) {
+            List<TestExecution> executions, String actorEmail) {
         Traceability analyzed = alignment.analyze(project, List.copyOf(items), List.copyOf(links), List.copyOf(executions));
         traces.put(project.id(), analyzed);
-        store.saveTraceability(analyzed);
+        store.saveTraceability(analyzed, actorEmail, null);
         int unapproved = (int) analyzed.items().stream().filter(item -> "DRAFT".equals(item.lifecycleStatus())).count() * 5;
         ScopeRisk risk = alignment.scopeRisk(project, analyzed, Math.min(20, project.baselineNumber() * 4), unapproved, List.of());
         scopeRisks.put(project.id(), risk);
@@ -779,11 +1063,27 @@ public class WorkspaceService {
         return value == null || value.isBlank() ? null : value.strip();
     }
 
+    private static String text(String value) {
+        String normalized = blankToNull(value);
+        return normalized == null ? "" : normalized;
+    }
+
     @Transactional
     public synchronized ChangeRequest createChange(UUID projectId, UUID baselineId, String title, String rationale,
                                                    List<UUID> changedItems, List<String> boundaryFlags) {
+        return createChange(projectId, baselineId, title, rationale, changedItems, boundaryFlags, null);
+    }
+
+    @Transactional
+    public synchronized ChangeRequest createChange(UUID projectId, UUID baselineId, String title, String rationale,
+                                                   List<UUID> changedItems, List<String> boundaryFlags, String actorEmail) {
         Project project = project(projectId);
-        if (baselineId == null) baselineId = project.currentBaselineId();
+        if (baselineId == null) {
+            throw new IllegalArgumentException("A concrete current baseline is required for a change request.");
+        }
+        if (project.currentBaselineId() == null || !project.currentBaselineId().equals(baselineId)) {
+            throw new IllegalArgumentException("The change request must select the project's exact current baseline.");
+        }
         Set<UUID> projectItems = traceability(projectId).items().stream().map(TraceItem::id).collect(Collectors.toSet());
         if (changedItems == null || changedItems.isEmpty() || changedItems.stream().anyMatch(item -> !projectItems.contains(item))) {
             throw new IllegalArgumentException("Every changed artifact must belong to the selected project trace baseline.");
@@ -791,24 +1091,34 @@ public class WorkspaceService {
         ChangeRequest change = new ChangeRequest(UUID.randomUUID(), projectId, baselineId, title, rationale,
                 "IMPACT_REVIEW", changedItems.stream().distinct().toList(), safeList(boundaryFlags).stream().distinct().toList(), Instant.now(), 0);
         changes.put(change.id(), change);
-        store.saveChange(change);
-        audit.append(null, "CHANGE_REQUEST_CREATED", "CHANGE_REQUEST", change.id(), "Created a baseline-bound change request.",
+        store.saveChange(change, actorEmail);
+        audit.append(actorEmail, "CHANGE_REQUEST_CREATED", "CHANGE_REQUEST", change.id(), "Created a baseline-bound change request.",
                 Map.of("projectId", projectId.toString(), "baselineId", String.valueOf(baselineId)));
-        previewImpact(change.id());
+        previewImpact(change.id(), actorEmail);
         return change;
     }
 
     @Transactional
     public synchronized ImpactPreview previewImpact(UUID changeId) {
+        return previewImpact(changeId, null);
+    }
+
+    @Transactional
+    public synchronized ImpactPreview previewImpact(UUID changeId, String actorEmail) {
         ChangeRequest change = change(changeId);
         Project project = project(change.projectId());
         Traceability trace = traceability(project.id());
         int unapproved = change.changedItemIds().size() * 5;
         ScopeRisk risk = alignment.scopeRisk(project, trace, 8, unapproved, change.boundaryFlags());
-        ImpactPreview preview = impactAnalyzer.preview(change, project, trace.items(), trace.links(), risk);
+        ImpactPreview calculated = impactAnalyzer.preview(change, project, trace.items(), trace.links(), risk);
+        long operationVersion = store.operationSetVersion(changeId);
+        String operationDigest = store.operationSetDigest(changeId);
+        ImpactPreview preview = new ImpactPreview(calculated.changeRequestId(), calculated.basedOnBaselineId(),
+                calculated.baselineCurrent(), calculated.scopeRisk(), calculated.impactedArtifacts(),
+                calculated.documentsToRevise(), calculated.calculatedAt(), operationVersion, operationDigest);
         impacts.put(change.id(), preview);
         if (!seeding) store.saveImpact(preview);
-        if (!seeding) audit.append(null, "CHANGE_IMPACT_CALCULATED", "CHANGE_REQUEST", change.id(), "Calculated cycle-safe impact paths.",
+        if (!seeding) audit.append(actorEmail, "CHANGE_IMPACT_CALCULATED", "CHANGE_REQUEST", change.id(), "Calculated cycle-safe impact paths.",
                 Map.of("baselineCurrent", preview.baselineCurrent(), "impactedArtifacts", preview.impactedArtifacts().size()));
         return preview;
     }
@@ -828,13 +1138,18 @@ public class WorkspaceService {
                     request.title(), request.rationale(), status, request.changedItemIds(), request.boundaryFlags(),
                     request.createdAt(), request.rowVersion() + 1);
             changes.put(changeId, updated);
-            store.saveChange(updated);
+            store.saveChange(updated, actorEmail);
             Project touched = touchProject(current);
             audit.append(actorEmail, "CHANGE_" + disposition.name(), "CHANGE_REQUEST", changeId,
                     "Recorded a reviewed change disposition without altering the approved baseline.", Map.of("rationale", rationale));
             return new BaselineApprovalResult(touched, traceability(current.id()));
         }
         ImpactPreview preview = impact(changeId);
+        long operationVersion = store.operationSetVersion(changeId);
+        String operationDigest = store.operationSetDigest(changeId);
+        if (preview.operationSetVersion() != operationVersion || !java.util.Objects.equals(preview.operationSetSha256(), operationDigest)) {
+            throw new IllegalArgumentException("The typed operation set changed after impact analysis; calculate a new preview before approval.");
+        }
         if (!preview.baselineCurrent() || !request.basedOnBaselineId().equals(current.currentBaselineId())) {
             throw new IllegalArgumentException("The request is based on a stale baseline; recalculate impact before approval.");
         }
@@ -917,11 +1232,11 @@ public class WorkspaceService {
         projects.put(current.id(), approved);
         store.saveProject(approved, required(projectProposalIds, current.id(), "Project proposal"));
         traces.put(current.id(), baseline);
-        store.saveTraceability(baseline);
+        store.saveTraceability(baseline, actorEmail, requiredText(rationale, "Change approval rationale"));
         ChangeRequest changed = new ChangeRequest(request.id(), request.projectId(), request.basedOnBaselineId(), request.title(),
                 request.rationale(), "APPROVED", request.changedItemIds(), request.boundaryFlags(), request.createdAt(), request.rowVersion() + 1);
         changes.put(changeId, changed);
-        store.saveChange(changed);
+        store.saveChange(changed, actorEmail);
         ScopeRisk risk = alignment.scopeRisk(approved, baseline, Math.min(20, promoted.size()), 0, request.boundaryFlags());
         scopeRisks.put(current.id(), risk);
         store.saveScopeRisk(current.id(), baselineId, risk, Instant.now());
@@ -972,7 +1287,8 @@ public class WorkspaceService {
         if (trace.coverage().priorityWeightedPassingCoverage() < 90) blockers.add("Priority-weighted passing coverage must reach 90%.");
         if (!pack.codeDataRightsConfirmed()) blockers.add("Code and data access rights must be confirmed.");
         if (!("READY".equals(pack.status()) || "COMPLETE".equals(pack.status()))
-                || pack.criteria().stream().anyMatch(criterion -> criterion.completion() < 1.0)
+                || pack.criteria().stream().anyMatch(criterion -> criterion.state() != AssessmentStatus.ASSESSED
+                        || criterion.value() == null || criterion.value() < 1.0)
                 || blank(pack.repositoryUrl()) || blank(pack.commitHash()) || blank(pack.setupInstructions())) {
             blockers.add("The continuity package must be complete, including repository revision, setup, and every readiness criterion.");
         }
@@ -998,7 +1314,7 @@ public class WorkspaceService {
         return assessment;
     }
 
-    private void persistDiscoveryInput(Proposal input) {
+    private void persistDiscoveryInput(Proposal input, String actorEmail) {
         UUID problemId = id("discovery-problem-" + input.id());
         ProblemCase problem = new ProblemCase(problemId, input.title(), input.problemStatement(), input.stakeholder(),
                 input.affectedUsers(), input.siteContext(), input.desiredOutcome(), input.constraints(), input.privacyClassification(),
@@ -1006,8 +1322,8 @@ public class WorkspaceService {
         problems.put(problemId, problem);
         proposals.put(input.id(), input);
         proposalProblemIds.put(input.id(), problemId);
-        store.saveProblem(problem);
-        store.saveProposal(input, problemId);
+        store.saveProblem(problem, actorEmail, false);
+        store.saveProposal(input, problemId, actorEmail);
     }
 
     private static boolean approved(DecisionDisposition disposition) {
@@ -1016,7 +1332,7 @@ public class WorkspaceService {
                 || disposition == DecisionDisposition.APPROVE_CONTINUE;
     }
 
-    private void createProjectFromDecision(ProposalDecision decision) {
+    private void createProjectFromDecision(ProposalDecision decision, String actorEmail) {
         if (projectProposalIds.containsValue(decision.proposalId())) return;
         Proposal source = proposal(decision.proposalId());
         UUID projectId = UUID.randomUUID();
@@ -1030,10 +1346,11 @@ public class WorkspaceService {
         Instant now = Instant.now();
         String code = "UGNAY-" + now.atZone(java.time.ZoneOffset.UTC).getYear() + "-" + projectId.toString().substring(0, 8).toUpperCase();
         Project project = new Project(projectId, code, source.title(), ProjectStatus.BASELINING, route,
-                demoUser.department(), baselineId, 1, List.of(), now, 0);
+                store.proposalDepartmentName(source.id()), baselineId, 1, List.of(), now, 0);
         projects.put(projectId, project);
         projectProposalIds.put(projectId, source.id());
         store.saveProject(project, source.id());
+        store.ensureInitialProjectMemberships(projectId, source.id(), actorEmail);
 
         TraceItem problem = new TraceItem(UUID.randomUUID(), "P-01", TraceItemType.PROBLEM, source.title(),
                 source.problemStatement(), "APPROVED", null, null, null, 1, 0);
@@ -1050,12 +1367,12 @@ public class WorkspaceService {
         }
         Traceability trace = alignment.analyze(project, items, links, List.of());
         traces.put(projectId, trace);
-        store.saveTraceability(trace);
+        store.saveTraceability(trace, actorEmail, "Initial baseline created from the approved academic route.");
 
         CompletionPackage completion = initialCompletion(projectId);
         packages.put(projectId, completion);
-        store.saveCompletion(completion);
-        ScopeRisk risk = new ScopeRisk(AssessmentStatus.UNASSESSED, null, null, 0, 0, 0, 0,
+        store.saveCompletion(completion, actorEmail);
+        ScopeRisk risk = new ScopeRisk(AssessmentStatus.UNASSESSED, null, null, null, null, null, null,
                 List.of("Scope risk remains unassessed until an approved requirements baseline exists."));
         scopeRisks.put(projectId, risk);
         store.saveScopeRisk(projectId, baselineId, risk, now);
@@ -1083,18 +1400,18 @@ public class WorkspaceService {
                 source.proposedSolution(), source.methodology(), source.dataSources(), source.technology(), source.intendedUsers(),
                 "APPROVED_" + route.name(), source.submittedAt(), source.rowVersion() + 1);
         proposals.put(source.id(), routed);
-        store.saveProposal(routed, proposalProblemIds.get(source.id()));
+        store.saveProposal(routed, proposalProblemIds.get(source.id()), actorEmail);
     }
 
     private CompletionPackage initialCompletion(UUID projectId) {
-        return new CompletionPackage(UUID.randomUUID(), projectId, "IN_PROGRESS", 0, false,
+        return new CompletionPackage(UUID.randomUUID(), projectId, "IN_PROGRESS", AssessmentStatus.UNASSESSED, null, false,
                 List.of(
-                        new ContinuityCriterion("trace", "Preserved trace and baseline history", 20, .2, "Initial route baseline is preserved."),
-                        new ContinuityCriterion("outputs", "Final documents and outputs", 15, 0, "Final outputs are not recorded."),
-                        new ContinuityCriterion("repository", "Repository, setup, licence, and access", 20, 0, "Repository handoff is not recorded."),
-                        new ContinuityCriterion("tests", "Test and evidence snapshot", 15, 0, "Verification evidence is not recorded."),
-                        new ContinuityCriterion("future-work", "Limitations and unfinished work", 15, 0, "Continuation items are not recorded."),
-                        new ContinuityCriterion("rights", "Ownership, data access, and contact path", 15, 0, "Rights are not confirmed.")),
+                        unassessedCriterion("trace", "Preserved trace and baseline history", 20, "Trace preservation has not been assessed."),
+                        unassessedCriterion("outputs", "Final documents and outputs", 15, "Final outputs have not been assessed."),
+                        unassessedCriterion("repository", "Repository, setup, licence, and access", 20, "Repository handoff has not been assessed."),
+                        unassessedCriterion("tests", "Test and evidence snapshot", 15, "Verification evidence has not been assessed."),
+                        unassessedCriterion("future-work", "Limitations and unfinished work", 15, "Future-work evidence has not been assessed."),
+                        unassessedCriterion("rights", "Ownership, data access, and contact path", 15, "Rights evidence has not been assessed.")),
                 List.of("Complete the approved trace baseline.", "Record current passing evidence.", "Prepare the continuity package."),
                 "", "", "", List.of(), List.of(), List.of());
     }
@@ -1108,10 +1425,11 @@ public class WorkspaceService {
         Project completed = new Project(project.id(), project.code(), project.title(), ProjectStatus.COMPLETED, project.route(),
                 project.department(), project.currentBaselineId(), project.baselineNumber(), project.team(), now, project.rowVersion() + 1);
         store.saveProject(completed, projectProposalIds.get(project.id()));
-        CompletionPackage completedPackage = new CompletionPackage(pack.id(), pack.projectId(), "COMPLETE", pack.readinessScore(), true,
+        CompletionPackage completedPackage = new CompletionPackage(pack.id(), pack.projectId(), "COMPLETE",
+                AssessmentStatus.ASSESSED, pack.readinessScore(), true,
                 pack.criteria(), List.of(), pack.repositoryUrl(), pack.commitHash(), pack.setupInstructions(), pack.limitations(),
                 pack.recommendations(), pack.unfinishedWork());
-        store.saveCompletion(completedPackage);
+        store.saveCompletion(completedPackage, actorEmail);
 
         Proposal proposal = proposal(projectProposalIds.get(project.id()));
         UUID studyId = id("completed-study-" + project.id());
@@ -1401,14 +1719,14 @@ public class WorkspaceService {
 
     private CompletionPackage seedCompletion(UUID projectId) {
         List<ContinuityCriterion> criteria = List.of(
-                new ContinuityCriterion("trace", "Preserved trace and baseline history", 20, 1.0, "Two immutable baselines are preserved."),
-                new ContinuityCriterion("outputs", "Final documents and outputs", 15, .67, "Final validation report remains incomplete."),
-                new ContinuityCriterion("repository", "Repository, setup, licence, and access", 20, .75, "Pinned commit and setup guide exist; licence review remains."),
-                new ContinuityCriterion("tests", "Test and evidence snapshot", 15, .67, "One Must test is stale and one is failing."),
-                new ContinuityCriterion("future-work", "Limitations and unfinished work", 15, 1.0, "Structured limitations and successor recommendations are recorded."),
-                new ContinuityCriterion("rights", "Ownership, data access, and contact path", 15, .67, "Data custodian confirmation is pending."));
-        return new CompletionPackage(id("completion-campus-flood"), projectId, "IN_PROGRESS", 79.0, false, criteria,
-                List.of("Confirm code and data rights.", "Refresh stale offline test evidence.", "Resolve the failing Must escalation test."),
+                unassessedCriterion("trace", "Preserved trace and baseline history", 20, "Run the server assessment against the current baseline."),
+                unassessedCriterion("outputs", "Final documents and outputs", 15, "Output references are unassessed."),
+                unassessedCriterion("repository", "Repository, setup, licence, and access", 20, "Repository evidence is unassessed."),
+                unassessedCriterion("tests", "Test and evidence snapshot", 15, "Test-run evidence is unassessed."),
+                unassessedCriterion("future-work", "Limitations and unfinished work", 15, "Future-work evidence is unassessed."),
+                unassessedCriterion("rights", "Ownership, data access, and contact path", 15, "Rights evidence is unassessed."));
+        return new CompletionPackage(id("completion-campus-flood"), projectId, "IN_PROGRESS", AssessmentStatus.UNASSESSED,
+                null, false, criteria, List.of("Run the server-derived completion assessment and independently verify references."),
                 "https://github.com/example/ugnay-campus-flood", "d7d1c6e", "Use Docker Compose; copy .env.example and run the verified seed profile.",
                 List.of("Pilot covers three buildings only.", "SMS delivery is not yet approved."),
                 List.of("Validate evacuation routes with the disaster-risk office.", "Compare readiness results across two semesters."),

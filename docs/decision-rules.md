@@ -74,7 +74,7 @@ Every arm receives the same frozen corpus items, structured query snapshots, qre
 
 Relevant means adjudicated grade at least 1 on the 0-3 scale. At K 1, 3, 5, and 10, calculate Precision, Recall, F1, MRR, and graded NDCG; K=5 is primary. NDCG gain is `2^grade - 1`. Unjudged retrieved studies count as non-relevant. Macro averages include eligible queries and report exclusions explicitly. An unavailable metric is null with status `UNAVAILABLE`, never a substituted zero.
 
-Run one unmeasured warm-up and five measured repetitions. Report index/profile build separately; retain p50/p95 query latency and supported process-CPU/heap evidence with the environment, build, model/provider, algorithm-configuration, corpus, query, qrel, dataset, and run hashes. Semantic absence makes its arm `UNAVAILABLE` and hybrid `PARTIAL`; weights are not rescaled and the suite is not `COMPARABLE`.
+Run one unmeasured warm-up and the profile-controlled number of measured repetitions: three on Windows Lite and five by default on the full profile. Report index/profile build separately; retain p50/p95 query latency and supported process-CPU/heap evidence with the environment, build, model/provider, algorithm-configuration, corpus, query, qrel, dataset, and run hashes. Semantic absence makes its arm `UNAVAILABLE` and hybrid `PARTIAL`; weights are not rescaled and the suite is not `COMPARABLE`.
 
 Recall@5 >= 0.85, NDCG@5 >= 0.75, and possible-duplicate false-positive rate <= 10% are acceptance targets, not current findings. The first two require a real frozen institutional retrieval dataset. Duplicate false-positive rate is a separate human-adjudicated route-classification measure and is not derived from qrels.
 

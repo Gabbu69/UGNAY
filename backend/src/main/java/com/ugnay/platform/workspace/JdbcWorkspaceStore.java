@@ -49,12 +49,14 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -153,8 +155,13 @@ public class JdbcWorkspaceStore {
 
     @Transactional
     public void saveProblem(ProblemCase problem) {
-        byte[] department = defaultDepartmentId();
-        byte[] actor = defaultActorId();
+        saveProblem(problem, null, true);
+    }
+
+    @Transactional
+    public void saveProblem(ProblemCase problem, String actorEmail, boolean createLegacyEvidenceRows) {
+        byte[] department = departmentIdForActor(actorEmail);
+        byte[] actor = actorId(actorEmail);
         if (exists("problem_cases", problem.id())) {
             jdbc.update("UPDATE problem_cases SET title=?, problem_statement=?, stakeholder=?, affected_users=?, site_context=?, desired_outcome=?, constraints_text=?, privacy_classification=?, intake_status=?, row_version=?, updated_at=? WHERE id=?",
                     problem.title(), problem.problemStatement(), problem.stakeholder(), problem.affectedUsers(), problem.siteContext(),
@@ -166,16 +173,20 @@ public class JdbcWorkspaceStore {
                     problem.affectedUsers(), problem.siteContext(), problem.desiredOutcome(), problem.constraints(),
                     problem.privacyClassification(), problem.status(), problem.rowVersion(), timestamp(problem.createdAt()), timestamp(problem.createdAt()));
         }
-        int current = jdbc.queryForObject("SELECT COUNT(*) FROM problem_evidence WHERE problem_case_id=?", Integer.class, bytes(problem.id()));
-        for (int index = current; index < problem.evidenceCount(); index++) {
-            jdbc.update("INSERT INTO problem_evidence(id, problem_case_id, evidence_type, summary, document_id, created_at) VALUES(?,?,?,?,?,?)",
-                    bytes(stableId("problem-evidence:" + problem.id() + ":" + index)), bytes(problem.id()), "RECORDED",
-                    "Structured intake evidence " + (index + 1), null, timestamp(problem.createdAt()));
+        if (createLegacyEvidenceRows) {
+            int current = jdbc.queryForObject("SELECT COUNT(*) FROM problem_evidence WHERE problem_case_id=?", Integer.class, bytes(problem.id()));
+            for (int index = current; index < problem.evidenceCount(); index++) {
+                jdbc.update("INSERT INTO problem_evidence(id, problem_case_id, evidence_type, summary, document_id, created_at) VALUES(?,?,?,?,?,?)",
+                        bytes(stableId("problem-evidence:" + problem.id() + ":" + index)), bytes(problem.id()), "RECORDED",
+                        "Recorded intake evidence", null, timestamp(problem.createdAt()));
+            }
         }
     }
 
     public List<ProblemCase> problems() {
-        return jdbc.query("SELECT p.*, (SELECT COUNT(*) FROM problem_evidence e WHERE e.problem_case_id=p.id) AS evidence_count FROM problem_cases p ORDER BY p.created_at DESC",
+        return jdbc.query("SELECT p.*, ((SELECT COUNT(*) FROM problem_evidence e WHERE e.problem_case_id=p.id) + "
+                        + "(SELECT COUNT(*) FROM evidence_references r WHERE r.subject_type='PROBLEM_CASE' AND r.subject_id=p.id)) AS evidence_count "
+                        + "FROM problem_cases p ORDER BY p.created_at DESC",
                 (result, row) -> new ProblemCase(uuid(result.getBytes("id")), result.getString("title"),
                         result.getString("problem_statement"), result.getString("stakeholder"), result.getString("affected_users"),
                         result.getString("site_context"), result.getString("desired_outcome"), result.getString("constraints_text"),
@@ -185,7 +196,12 @@ public class JdbcWorkspaceStore {
 
     @Transactional
     public void saveProposal(Proposal proposal, UUID problemId) {
-        byte[] actor = defaultActorId();
+        saveProposal(proposal, problemId, null);
+    }
+
+    @Transactional
+    public void saveProposal(Proposal proposal, UUID problemId, String actorEmail) {
+        byte[] actor = actorId(actorEmail);
         if (exists("proposals", proposal.id())) {
             jdbc.update("UPDATE proposals SET problem_case_id=?, proposed_title=?, proposed_solution=?, methodology=?, technology_text=?, data_sources_text=?, intended_users_text=?, proposal_status=?, row_version=?, submitted_at=? WHERE id=?",
                     bytes(problemId), proposal.title(), proposal.proposedSolution(), proposal.methodology(), proposal.technology(),
@@ -223,6 +239,17 @@ public class JdbcWorkspaceStore {
         return Map.copyOf(result);
     }
 
+    public boolean proposalExists(UUID proposalId) {
+        return exists("proposals", proposalId);
+    }
+
+    public String proposalDepartmentName(UUID proposalId) {
+        return jdbc.query("SELECT d.name FROM proposals p JOIN problem_cases pc ON pc.id=p.problem_case_id "
+                        + "JOIN departments d ON d.id=pc.department_id WHERE p.id=?",
+                (row, index) -> row.getString(1), bytes(proposalId)).stream().findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Proposal department was not found."));
+    }
+
     @Transactional
     public void saveDiscovery(DiscoveryRun run) {
         UUID configId = stableId("algorithm:" + run.algorithmVersion());
@@ -247,17 +274,24 @@ public class JdbcWorkspaceStore {
         return jdbc.query("SELECT r.*, c.algorithm_version FROM discovery_runs r JOIN algorithm_configurations c ON c.id=r.algorithm_configuration_id ORDER BY r.completed_at DESC",
                 (result, row) -> new DiscoveryRun(uuid(result.getBytes("id")), uuid(result.getBytes("proposal_id")),
                         AssessmentStatus.valueOf(result.getString("assessment_status")), Recommendation.valueOf(result.getString("recommendation")),
-                        result.getDouble("confidence_score"), result.getString("algorithm_version"), result.getString("input_sha256"),
+                        result.getObject("confidence_score") == null ? AssessmentStatus.UNASSESSED
+                                : AssessmentStatus.valueOf(result.getString("assessment_status")),
+                        nullableDouble(result, "confidence_score"), result.getString("algorithm_version"), result.getString("input_sha256"),
                         result.getString("semantic_provider"), result.getString("explanation"), revisionChecklist(result.getBytes("id")),
                         discoveryCandidates(result.getBytes("id")), instant(result, "completed_at")));
     }
 
     @Transactional
     public void saveDecision(ProposalDecision decision) {
+        saveDecision(decision, null);
+    }
+
+    @Transactional
+    public void saveDecision(ProposalDecision decision, String actorEmail) {
         if (exists("proposal_decisions", decision.id())) return;
         jdbc.update("INSERT INTO proposal_decisions(id, proposal_id, discovery_run_id, disposition, rationale, decided_by, decided_at) VALUES(?,?,?,?,?,?,?)",
                 bytes(decision.id()), bytes(decision.proposalId()), nullableBytes(decision.discoveryRunId()), decision.disposition().name(),
-                decision.rationale(), defaultActorId(), timestamp(decision.decidedAt()));
+                decision.rationale(), actorId(actorEmail), timestamp(decision.decidedAt()));
         if (decision.primaryPredecessorId() != null) {
             jdbc.update("INSERT INTO decision_target_studies(decision_id, study_id, relationship_type, primary_target) VALUES(?,?,?,?)",
                     bytes(decision.id()), bytes(decision.primaryPredecessorId()), dispositionRelationship(decision.disposition()), true);
@@ -313,13 +347,19 @@ public class JdbcWorkspaceStore {
 
     @Transactional
     public void saveTraceability(Traceability trace) {
+        saveTraceability(trace, null, null);
+    }
+
+    @Transactional
+    public void saveTraceability(Traceability trace, String actorEmail, String approvalRationale) {
         if (trace.baselineId() == null) return;
-        byte[] actor = defaultActorId();
+        byte[] actor = actorId(actorEmail);
         boolean freezeBaseline = !baselineExists(trace.baselineId());
         if (freezeBaseline) {
             jdbc.update("INSERT INTO project_baselines(id, project_id, baseline_number, baseline_status, approved_by, approval_rationale, approved_at, content_sha256, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                     bytes(trace.baselineId()), bytes(trace.projectId()), trace.baselineNumber(), "APPROVED", actor,
-                    "Persisted approved traceability baseline.", timestamp(Instant.now()), sha256(trace.toString()), timestamp(Instant.now()));
+                    approvalRationale == null || approvalRationale.isBlank() ? "Persisted approved traceability baseline." : approvalRationale.strip(),
+                    timestamp(Instant.now()), sha256(trace.toString()), timestamp(Instant.now()));
         }
         jdbc.update("UPDATE projects SET current_baseline_id=?, updated_at=? WHERE id=?",
                 bytes(trace.baselineId()), timestamp(Instant.now()), bytes(trace.projectId()));
@@ -417,10 +457,15 @@ public class JdbcWorkspaceStore {
 
     @Transactional
     public void saveChange(ChangeRequest change) {
+        saveChange(change, null);
+    }
+
+    @Transactional
+    public void saveChange(ChangeRequest change, String actorEmail) {
         if (!exists("change_requests", change.id())) {
             jdbc.update("INSERT INTO change_requests(id, project_id, based_on_baseline_id, title, rationale, request_status, boundary_flags_json, requested_by, row_version, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                     bytes(change.id()), bytes(change.projectId()), bytes(change.basedOnBaselineId()), change.title(), change.rationale(),
-                    change.status(), "[]", defaultActorId(), change.rowVersion(), timestamp(change.createdAt()));
+                    change.status(), "[]", actorId(actorEmail), change.rowVersion(), timestamp(change.createdAt()));
             for (int index = 0; index < list(change.changedItemIds()).size(); index++) {
                 UUID itemId = change.changedItemIds().get(index);
                 jdbc.update("INSERT INTO change_request_items(id, change_request_id, trace_item_id, operation_type, proposed_revision_json) VALUES(?,?,?,?,?)",
@@ -462,8 +507,11 @@ public class JdbcWorkspaceStore {
         UUID projectId = jdbc.queryForObject("SELECT project_id FROM change_requests WHERE id=?", (row, index) -> uuid(row.getBytes(1)), changeId);
         UUID riskId = insertScopeRisk(projectId, preview.basedOnBaselineId(), preview.scopeRisk(), preview.calculatedAt());
         UUID previewId = stableId("impact-preview:" + preview.changeRequestId() + ":" + preview.calculatedAt());
-        jdbc.update("INSERT INTO impact_previews(id, change_request_id, based_on_baseline_id, baseline_current, scope_risk_snapshot_id, calculated_at) VALUES(?,?,?,?,?,?)",
-                bytes(previewId), changeId, bytes(preview.basedOnBaselineId()), preview.baselineCurrent(), bytes(riskId), timestamp(preview.calculatedAt()));
+        long operationVersion = operationSetVersion(preview.changeRequestId());
+        String operationDigest = operationSetDigest(preview.changeRequestId());
+        jdbc.update("INSERT INTO impact_previews(id, change_request_id, based_on_baseline_id, baseline_current, scope_risk_snapshot_id, calculated_at, operation_set_version, operation_set_sha256) VALUES(?,?,?,?,?,?,?,?)",
+                bytes(previewId), changeId, bytes(preview.basedOnBaselineId()), preview.baselineCurrent(), bytes(riskId),
+                timestamp(preview.calculatedAt()), operationVersion, operationDigest);
         for (int artifactIndex = 0; artifactIndex < list(preview.impactedArtifacts()).size(); artifactIndex++) {
             ImpactedArtifact artifact = preview.impactedArtifacts().get(artifactIndex);
             UUID pathId = stableId("impact-path:" + previewId + ":" + artifactIndex);
@@ -494,31 +542,61 @@ public class JdbcWorkspaceStore {
                             (child, index) -> child.getString(1), bytes(previewId));
                     ScopeRisk risk = scopeRiskById(uuid(row.getBytes("scope_risk_snapshot_id")));
                     result.put(changeId, new ImpactPreview(changeId, uuid(row.getBytes("based_on_baseline_id")),
-                            row.getBoolean("baseline_current"), risk, artifacts, documents, instant(row, "calculated_at")));
+                            row.getBoolean("baseline_current"), risk, artifacts, documents, instant(row, "calculated_at"),
+                            row.getLong("operation_set_version"), row.getString("operation_set_sha256")));
                 });
         return Map.copyOf(result);
     }
 
+    public long operationSetVersion(UUID changeRequestId) {
+        Long value = jdbc.queryForObject("SELECT operation_set_version FROM change_requests WHERE id=?", Long.class,
+                bytes(changeRequestId));
+        if (value == null) throw new IllegalArgumentException("Change request was not found.");
+        return value;
+    }
+
+    public String operationSetDigest(UUID changeRequestId) {
+        List<String> rows = jdbc.query("SELECT operation_order,operation_type,target_item_id,item_type,item_key,title,description,priority,acceptance_criteria,verification_method,source_item_id,link_target_item_id,relationship_type,remove_relationship,rationale "
+                        + "FROM change_operations WHERE change_request_id=? ORDER BY operation_order",
+                (row, index) -> {
+                    StringBuilder value = new StringBuilder();
+                    for (int column = 1; column <= 15; column++) {
+                        Object field = row.getObject(column);
+                        String text = field instanceof byte[] bytes ? java.util.HexFormat.of().formatHex(bytes) : String.valueOf(field);
+                        value.append(text.length()).append(':').append(text).append('|');
+                    }
+                    return value.toString();
+                }, bytes(changeRequestId));
+        return sha256(String.join("\n", rows));
+    }
+
     @Transactional
     public void saveCompletion(CompletionPackage completion) {
+        saveCompletion(completion, null);
+    }
+
+    @Transactional
+    public void saveCompletion(CompletionPackage completion, String actorEmail) {
         byte[] id = bytes(completion.id());
         boolean complete = "COMPLETE".equals(completion.status());
-        byte[] completedBy = complete ? defaultActorId() : null;
+        byte[] completedBy = complete ? actorId(actorEmail) : null;
         Timestamp completedAt = complete ? timestamp(Instant.now()) : null;
+        double storedReadiness = completion.readinessScore() == null ? 0 : completion.readinessScore();
         if (exists("completion_packages", completion.id())) {
-            jdbc.update("UPDATE completion_packages SET package_status=?, readiness_score=?, code_data_rights_confirmed=?, completed_by=?, completed_at=?, row_version=row_version+1 WHERE id=? AND project_id=?",
-                    completion.status(), completion.readinessScore(), completion.codeDataRightsConfirmed(), completedBy, completedAt,
+            jdbc.update("UPDATE completion_packages SET package_status=?, readiness_state=?, readiness_score=?, code_data_rights_confirmed=?, completed_by=?, completed_at=?, row_version=row_version+1 WHERE id=? AND project_id=?",
+                    completion.status(), completion.readinessState().name(), storedReadiness, completion.codeDataRightsConfirmed(), completedBy, completedAt,
                     id, bytes(completion.projectId()));
         } else {
-            jdbc.update("INSERT INTO completion_packages(id, project_id, package_status, readiness_score, code_data_rights_confirmed, ownership_notes, contact_path, completed_by, completed_at, row_version, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                    id, bytes(completion.projectId()), completion.status(), completion.readinessScore(), completion.codeDataRightsConfirmed(),
+            jdbc.update("INSERT INTO completion_packages(id, project_id, package_status, readiness_state, readiness_score, code_data_rights_confirmed, ownership_notes, contact_path, completed_by, completed_at, row_version, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    id, bytes(completion.projectId()), completion.status(), completion.readinessState().name(), storedReadiness, completion.codeDataRightsConfirmed(),
                     null, null, completedBy, completedAt, 0, timestamp(Instant.now()));
         }
         jdbc.update("DELETE FROM completion_criteria WHERE completion_package_id=?", id);
         for (int index = 0; index < list(completion.criteria()).size(); index++) {
             ContinuityCriterion criterion = completion.criteria().get(index);
-            jdbc.update("INSERT INTO completion_criteria(completion_package_id, criterion_order, criterion_key, criterion_label, criterion_weight, completion_ratio, explanation) VALUES(?,?,?,?,?,?,?)",
-                    id, index, criterion.key(), criterion.label(), criterion.weight(), criterion.completion(), criterion.explanation());
+            jdbc.update("INSERT INTO completion_criteria(completion_package_id, criterion_order, criterion_key, criterion_label, criterion_weight, assessment_state, completion_ratio, evidence_source, assessed_at, explanation) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    id, index, criterion.key(), criterion.label(), criterion.weight(), criterion.state().name(),
+                    criterion.value() == null ? 0 : criterion.value(), criterion.source(), timestamp(criterion.assessedAt()), criterion.explanation());
         }
         jdbc.update("DELETE FROM completion_package_items WHERE completion_package_id=?", id);
         saveCompletionItems(id, "BLOCKER", completion.blockers());
@@ -544,10 +622,19 @@ public class JdbcWorkspaceStore {
             byte[] packageId = row.getBytes("id");
             UUID projectId = uuid(row.getBytes("project_id"));
             List<ContinuityCriterion> criteria = jdbc.query("SELECT * FROM completion_criteria WHERE completion_package_id=? ORDER BY criterion_order",
-                    (child, childIndex) -> new ContinuityCriterion(child.getString("criterion_key"), child.getString("criterion_label"),
-                            child.getInt("criterion_weight"), child.getDouble("completion_ratio"), child.getString("explanation")), packageId);
+                    (child, childIndex) -> {
+                        AssessmentStatus state = AssessmentStatus.valueOf(child.getString("assessment_state"));
+                        Double value = Set.of(AssessmentStatus.UNASSESSED, AssessmentStatus.UNAVAILABLE).contains(state)
+                                ? null : nullableDouble(child, "completion_ratio");
+                        return new ContinuityCriterion(child.getString("criterion_key"), child.getString("criterion_label"),
+                                child.getInt("criterion_weight"), state, value, child.getString("evidence_source"),
+                                instant(child, "assessed_at"), child.getString("explanation"));
+                    }, packageId);
             RepositoryRow repository = repository(projectId);
-            return new CompletionPackage(uuid(packageId), projectId, row.getString("package_status"), row.getDouble("readiness_score"),
+            AssessmentStatus readinessState = AssessmentStatus.valueOf(row.getString("readiness_state"));
+            Double readiness = Set.of(AssessmentStatus.UNASSESSED, AssessmentStatus.UNAVAILABLE).contains(readinessState)
+                    ? null : nullableDouble(row, "readiness_score");
+            return new CompletionPackage(uuid(packageId), projectId, row.getString("package_status"), readinessState, readiness,
                     row.getBoolean("code_data_rights_confirmed"), criteria, completionItems(packageId, "BLOCKER"),
                     repository.url(), repository.commit(), repository.setup(), completionItems(packageId, "LIMITATION"),
                     completionItems(packageId, "RECOMMENDATION"), completionItems(packageId, "UNFINISHED_WORK"));
@@ -634,18 +721,155 @@ public class JdbcWorkspaceStore {
 
     @Transactional
     public void replaceReviewQueue(List<ReviewQueueItem> queue) {
-        jdbc.update("DELETE FROM review_queue_items");
         for (ReviewQueueItem item : list(queue)) {
-            jdbc.update("INSERT INTO review_queue_items(id, item_type, title, project_code, severity, required_role, reason_text, due_at) VALUES(?,?,?,?,?,?,?,?)",
-                    bytes(item.id()), item.type(), item.title(), item.projectCode(), item.severity().name(), item.requiredRole(),
-                    item.reason(), timestamp(item.dueAt()));
+            if (!exists("review_queue_items", item.id())) {
+                jdbc.update("INSERT INTO review_queue_items(id, item_type, title, project_code, project_id, severity, required_role, reason_text, due_at) "
+                                + "VALUES(?,?,?,?,(SELECT id FROM projects WHERE project_code=?),?,?,?,?)",
+                        bytes(item.id()), item.type(), item.title(), item.projectCode(), item.projectCode(),
+                        item.severity().name(), item.requiredRole(), item.reason(), timestamp(item.dueAt()));
+            }
         }
+    }
+
+    /**
+     * Project creation is the boundary where proposal-scoped access becomes
+     * explicit project membership. Preserve access for the proposal submitter
+     * and the authenticated coordinator who recorded the route; do not grant
+     * access to every account in the department.
+     */
+    @Transactional
+    public void ensureInitialProjectMemberships(UUID projectId, UUID proposalId, String decisionActorEmail) {
+        Instant joinedAt = Instant.now();
+        jdbc.update("INSERT INTO project_memberships(project_id,user_id,membership_role,joined_at) "
+                        + "SELECT DISTINCT ?,u.id,r.code,? FROM user_accounts u "
+                        + "JOIN user_roles ur ON ur.user_id=u.id JOIN roles r ON r.id=ur.role_id "
+                        + "JOIN projects pr ON pr.id=? AND pr.department_id=u.department_id "
+                        + "JOIN proposals p ON p.id=? "
+                        + "WHERE u.account_status='ACTIVE' AND r.code IN ('STUDENT','ADVISER','COORDINATOR','REVIEWER') "
+                        + "AND (u.id=p.submitted_by OR LOWER(u.email)=LOWER(?)) "
+                        + "AND NOT EXISTS (SELECT 1 FROM project_memberships pm WHERE pm.project_id=? "
+                        + "AND pm.user_id=u.id AND pm.membership_role=r.code)",
+                bytes(projectId), timestamp(joinedAt), bytes(projectId), bytes(proposalId), decisionActorEmail,
+                bytes(projectId));
     }
 
     public List<ReviewQueueItem> reviewQueue() {
         return jdbc.query("SELECT * FROM review_queue_items ORDER BY due_at", (row, index) -> new ReviewQueueItem(
                 uuid(row.getBytes("id")), row.getString("item_type"), row.getString("title"), row.getString("project_code"),
                 Severity.valueOf(row.getString("severity")), row.getString("required_role"), row.getString("reason_text"), instant(row, "due_at")));
+    }
+
+    public List<ResearchReviewRecord> researchReviews(UUID projectId) {
+        return jdbc.query("SELECT q.* FROM review_queue_items q WHERE q.project_id=? ORDER BY q.due_at,q.id",
+                (row, index) -> {
+                    UUID reviewId = uuid(row.getBytes("id"));
+                    List<ResearchReviewEvent> history = researchReviewHistory(reviewId);
+                    String status = history.isEmpty() ? "OPEN" : switch (history.getLast().eventType()) {
+                        case "REVISION_REQUESTED" -> "REVISION_REQUESTED";
+                        case "REVISION_RESPONDED" -> "REVISION_RESPONDED";
+                        default -> "OPEN";
+                    };
+                    return new ResearchReviewRecord(reviewId, uuid(row.getBytes("project_id")), row.getString("item_type"),
+                            row.getString("title"), row.getString("project_code"), Severity.valueOf(row.getString("severity")),
+                            row.getString("required_role"), row.getString("reason_text"), instant(row, "due_at"), status,
+                            history);
+                }, bytes(projectId));
+    }
+
+    public ResearchReviewRecord researchReview(UUID projectId, UUID reviewId) {
+        return researchReviews(projectId).stream().filter(value -> value.id().equals(reviewId)).findFirst()
+                .orElseThrow(() -> new java.util.NoSuchElementException("Review record was not found in the selected project."));
+    }
+
+    @Transactional
+    public ResearchReviewRecord appendResearchReviewEvent(UUID projectId, UUID reviewId, String eventType,
+            String message, String evidenceLocation, String actorEmail, Instant createdAt) {
+        ResearchReviewRecord current = researchReview(projectId, reviewId);
+        String event = eventType == null ? "" : eventType.strip().toUpperCase();
+        if ("REVISION_REQUESTED".equals(event)) {
+            if ("REVISION_REQUESTED".equals(current.status())) {
+                throw new EvidenceVerificationException("A revision response is required before another request can be appended.");
+            }
+        } else if ("REVISION_RESPONDED".equals(event)) {
+            if (!"REVISION_REQUESTED".equals(current.status())) {
+                throw new EvidenceVerificationException("A revision response requires a current persisted revision request.");
+            }
+        } else {
+            throw new EvidenceVerificationException("Review event must be REVISION_REQUESTED or REVISION_RESPONDED.");
+        }
+        jdbc.update("INSERT INTO research_review_events(id,review_id,event_type,message_text,evidence_location,actor_id,created_at) VALUES(?,?,?,?,?,?,?)",
+                bytes(UUID.randomUUID()), bytes(reviewId), event, message, blankToNull(evidenceLocation), actorId(actorEmail),
+                timestamp(createdAt));
+        return researchReview(projectId, reviewId);
+    }
+
+    private List<ResearchReviewEvent> researchReviewHistory(UUID reviewId) {
+        return jdbc.query("SELECT e.id,e.event_type,e.message_text,e.evidence_location,u.email,e.created_at "
+                        + "FROM research_review_events e JOIN user_accounts u ON u.id=e.actor_id "
+                        + "WHERE e.review_id=? ORDER BY e.created_at,e.id",
+                (row, index) -> new ResearchReviewEvent(uuid(row.getBytes(1)), row.getString(2), row.getString(3),
+                        row.getString(4), row.getString(5), instant(row, "created_at")), bytes(reviewId));
+    }
+
+    public Optional<IntakeSubmissionRecord> intakeSubmission(String actorEmail, String idempotencyKey) {
+        return jdbc.query("SELECT i.request_sha256,i.problem_case_id,i.proposal_id,i.discovery_run_id "
+                        + "FROM intake_submissions i JOIN user_accounts u ON u.id=i.submitted_by "
+                        + "WHERE LOWER(u.email)=LOWER(?) AND i.idempotency_key=?",
+                (row, index) -> new IntakeSubmissionRecord(row.getString(1), uuid(row.getBytes(2)),
+                        uuid(row.getBytes(3)), uuid(row.getBytes(4))), actorEmail, idempotencyKey)
+                .stream().findFirst();
+    }
+
+    @Transactional
+    public void saveIntakeSubmission(String actorEmail, String idempotencyKey, String requestSha256,
+            UUID problemId, UUID proposalId, UUID discoveryRunId, Instant submittedAt) {
+        jdbc.update("INSERT INTO intake_submissions(id,idempotency_key,request_sha256,problem_case_id,proposal_id,discovery_run_id,submitted_by,submitted_at) "
+                        + "VALUES(?,?,?,?,?,?,?,?)",
+                bytes(UUID.randomUUID()), idempotencyKey, requestSha256, bytes(problemId), bytes(proposalId),
+                bytes(discoveryRunId), actorId(actorEmail), timestamp(submittedAt));
+    }
+
+    @Transactional
+    public void saveEvidenceReferences(String subjectType, UUID subjectId,
+            List<EvidenceReferenceRecord> references, String actorEmail, Instant capturedAt) {
+        byte[] actor = actorId(actorEmail);
+        for (EvidenceReferenceRecord reference : list(references)) {
+            jdbc.update("INSERT INTO evidence_references(id,subject_type,subject_id,reference_type,reference_label,reference_location,document_id,content_sha256,verification_state,recorded_by,captured_at) "
+                            + "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    bytes(reference.id()), subjectType, bytes(subjectId), reference.type(), reference.label(),
+                    reference.location(), nullableBytes(reference.documentId()), reference.sha256(), "UNVERIFIED", actor,
+                    timestamp(capturedAt));
+        }
+    }
+
+    public List<EvidenceReferenceRecord> evidenceReferences(String subjectType, UUID subjectId) {
+        return jdbc.query("SELECT id,reference_type,reference_label,reference_location,document_id,content_sha256,verification_state,captured_at "
+                        + "FROM evidence_references WHERE subject_type=? AND subject_id=? ORDER BY captured_at,id",
+                (row, index) -> new EvidenceReferenceRecord(uuid(row.getBytes(1)), row.getString(2), row.getString(3),
+                        row.getString(4), nullableUuid(row.getBytes(5)), row.getString(6), row.getString(7),
+                        row.getTimestamp(8).toInstant()), subjectType, bytes(subjectId));
+    }
+
+    @Transactional
+    public EvidenceReferenceRecord verifyEvidenceReference(String subjectType, UUID subjectId, UUID referenceId,
+            String verificationState, String notes, String actorEmail, Instant verifiedAt) {
+        String state = verificationState == null ? "" : verificationState.strip().toUpperCase();
+        if (!List.of("VERIFIED", "REJECTED", "UNAVAILABLE").contains(state)) {
+            throw new EvidenceVerificationException("Verification state must be VERIFIED, REJECTED, or UNAVAILABLE.");
+        }
+        List<byte[]> recorders = jdbc.query(
+                "SELECT recorded_by FROM evidence_references WHERE id=? AND subject_type=? AND subject_id=?",
+                (row, index) -> row.getBytes(1), bytes(referenceId), subjectType, bytes(subjectId));
+        if (recorders.size() != 1) throw new EvidenceVerificationException("The selected evidence reference is not part of this completion package.");
+        byte[] verifier = actorId(actorEmail);
+        if (Arrays.equals(recorders.getFirst(), verifier)) {
+            throw new EvidenceVerificationException("Evidence must be verified by a different authenticated project member.");
+        }
+        jdbc.update("INSERT INTO evidence_reference_verifications(id,evidence_reference_id,verification_state,verification_notes,verified_by,verified_at) VALUES(?,?,?,?,?,?)",
+                bytes(UUID.randomUUID()), bytes(referenceId), state, notes, verifier, timestamp(verifiedAt));
+        jdbc.update("UPDATE evidence_references SET verification_state=? WHERE id=?", state, bytes(referenceId));
+        return evidenceReferences(subjectType, subjectId).stream().filter(value -> value.id().equals(referenceId))
+                .findFirst().orElseThrow();
     }
 
     public WorkspaceState load() {
@@ -747,6 +971,12 @@ public class JdbcWorkspaceStore {
                 (row, index) -> row.getString(1), proposalId);
     }
 
+    public List<ProposalObjectiveRecord> proposalObjectiveRecords(UUID proposalId) {
+        return jdbc.query("SELECT id,objective_order,statement_text FROM proposal_objectives WHERE proposal_id=? ORDER BY objective_order",
+                (row, index) -> new ProposalObjectiveRecord(uuid(row.getBytes(1)), row.getInt(2), row.getString(3)),
+                bytes(proposalId));
+    }
+
     private List<String> projectTeam(byte[] projectId) {
         return jdbc.query("SELECT display_name FROM project_team_members WHERE project_id=? ORDER BY member_order",
                 (row, index) -> row.getString(1), projectId);
@@ -820,8 +1050,8 @@ public class JdbcWorkspaceStore {
         UUID id = stableId("scope:" + projectId + ":" + calculatedAt + ":" + risk);
         if (exists("scope_risk_snapshots", id)) return id;
         jdbc.update("INSERT INTO scope_risk_snapshots(id, project_id, baseline_id, assessment_status, risk_score, risk_band, governance_score, alignment_score, controlled_growth_score, boundary_score, calculated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                bytes(id), bytes(projectId), nullableBytes(baselineId), risk.status().name(), risk.score(), risk.band(), risk.governance(),
-                risk.alignment(), risk.controlledGrowth(), risk.boundary(), timestamp(calculatedAt));
+                bytes(id), bytes(projectId), nullableBytes(baselineId), risk.status().name(), risk.score(), risk.band(), storedScore(risk.governance()),
+                storedScore(risk.alignment()), storedScore(risk.controlledGrowth()), storedScore(risk.boundary()), timestamp(calculatedAt));
         for (int index = 0; index < list(risk.explanations()).size(); index++) {
             jdbc.update("INSERT INTO scope_risk_explanations(scope_risk_snapshot_id, explanation_order, explanation_text) VALUES(?,?,?)",
                     bytes(id), index, risk.explanations().get(index));
@@ -835,11 +1065,15 @@ public class JdbcWorkspaceStore {
     }
 
     private ScopeRisk scopeRiskById(UUID id) {
-        return jdbc.queryForObject("SELECT * FROM scope_risk_snapshots WHERE id=?", (row, index) -> new ScopeRisk(
-                AssessmentStatus.valueOf(row.getString("assessment_status")), nullableInteger(row, "risk_score"), row.getString("risk_band"),
-                row.getInt("governance_score"), row.getInt("alignment_score"), row.getInt("controlled_growth_score"),
-                row.getInt("boundary_score"), jdbc.query("SELECT explanation_text FROM scope_risk_explanations WHERE scope_risk_snapshot_id=? ORDER BY explanation_order",
-                        (child, childIndex) -> child.getString(1), bytes(id))), bytes(id));
+        return jdbc.queryForObject("SELECT * FROM scope_risk_snapshots WHERE id=?", (row, index) -> {
+            AssessmentStatus status = AssessmentStatus.valueOf(row.getString("assessment_status"));
+            boolean assessed = status != AssessmentStatus.UNASSESSED && status != AssessmentStatus.UNAVAILABLE;
+            return new ScopeRisk(status, nullableInteger(row, "risk_score"), row.getString("risk_band"),
+                    assessed ? row.getInt("governance_score") : null, assessed ? row.getInt("alignment_score") : null,
+                    assessed ? row.getInt("controlled_growth_score") : null, assessed ? row.getInt("boundary_score") : null,
+                    jdbc.query("SELECT explanation_text FROM scope_risk_explanations WHERE scope_risk_snapshot_id=? ORDER BY explanation_order",
+                            (child, childIndex) -> child.getString(1), bytes(id)));
+        }, bytes(id));
     }
 
     private List<ImpactedArtifact> impactArtifacts(UUID changeId) {
@@ -900,6 +1134,20 @@ public class JdbcWorkspaceStore {
     private byte[] defaultActorId() {
         return jdbc.query("SELECT id FROM user_accounts WHERE account_status='ACTIVE' ORDER BY created_at LIMIT 1", (row, index) -> row.getBytes(1))
                 .stream().findFirst().orElseThrow(() -> new IllegalStateException("Identity bootstrap must create an active account before workspace persistence."));
+    }
+
+    private byte[] actorId(String email) {
+        if (email == null || email.isBlank()) return defaultActorId();
+        return jdbc.query("SELECT id FROM user_accounts WHERE LOWER(email)=LOWER(?) AND account_status='ACTIVE'",
+                        (row, index) -> row.getBytes(1), email)
+                .stream().findFirst().orElseThrow(() -> new IllegalArgumentException("The authenticated account is not active."));
+    }
+
+    private byte[] departmentIdForActor(String email) {
+        if (email == null || email.isBlank()) return defaultDepartmentId();
+        return jdbc.query("SELECT department_id FROM user_accounts WHERE LOWER(email)=LOWER(?) AND account_status='ACTIVE' AND department_id IS NOT NULL",
+                        (row, index) -> row.getBytes(1), email)
+                .stream().findFirst().orElseThrow(() -> new IllegalArgumentException("The authenticated account has no active department."));
     }
 
     private boolean baselineExists(UUID id) {
@@ -977,6 +1225,10 @@ public class JdbcWorkspaceStore {
         return result.wasNull() ? null : value;
     }
 
+    private static int storedScore(Integer value) {
+        return value == null ? 0 : value;
+    }
+
     private static String sha256(String value) {
         try {
             return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
@@ -989,6 +1241,10 @@ public class JdbcWorkspaceStore {
         return text == null ? "" : text;
     }
 
+    private static String blankToNull(String text) {
+        return text == null || text.isBlank() ? null : text.strip();
+    }
+
     private static String abbreviate(String text, int max) {
         if (text == null) return "";
         return text.length() <= max ? text : text.substring(0, max - 1) + "…";
@@ -996,4 +1252,13 @@ public class JdbcWorkspaceStore {
 
     private record RepositoryRow(String url, String commit, String setup) {}
     private record HealthRow(byte[] id, String overall, Instant calculatedAt, int open, int critical, String ruleVersion) {}
+    public record IntakeSubmissionRecord(String requestSha256, UUID problemId, UUID proposalId, UUID discoveryRunId) {}
+    public record EvidenceReferenceRecord(UUID id, String type, String label, String location, UUID documentId, String sha256,
+            String verificationState, Instant capturedAt) {}
+    public record ResearchReviewEvent(UUID id, String eventType, String message, String evidenceLocation,
+            String actorEmail, Instant createdAt) {}
+    public record ProposalObjectiveRecord(UUID id, int order, String statement) {}
+    public record ResearchReviewRecord(UUID id, UUID projectId, String type, String title, String projectCode,
+            Severity severity, String requiredRole, String reason, Instant dueAt, String status,
+            List<ResearchReviewEvent> history) {}
 }

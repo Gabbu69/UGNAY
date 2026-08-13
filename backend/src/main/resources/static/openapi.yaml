@@ -173,22 +173,38 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
       responses: { '201': { description: Published study and immutable document-version association }, '403': { $ref: '#/components/responses/Problem' }, '422': { $ref: '#/components/responses/Problem' } }
   /problems:
-    get: { summary: List structured problem cases, responses: { '200': { description: Problem cases } } }
+    get: { summary: List structured problem cases in the authenticated account's department or granted project, responses: { '200': { description: Authorized problem cases } } }
     post:
       summary: Create a structured problem case
       requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
       responses: { '201': { description: Created problem case }, '400': { $ref: '#/components/responses/Problem' } }
   /proposals:
-    get: { summary: List proposals, responses: { '200': { description: Proposals } } }
+    get: { summary: List proposals in the authenticated account's department or granted project, responses: { '200': { description: Authorized proposals } } }
     post:
       summary: Create a proposal from a problem case
       requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
       responses: { '201': { description: Created proposal } }
+  /intakes:
+    post:
+      summary: Atomically persist one problem, proposal, evidence-reference set, and frozen discovery run
+      description: Reusing the same Idempotency-Key and normalized payload returns the original records; reusing it with different content returns 409. Optional information remains absent rather than being replaced with plausible prose.
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/IntakeRequest' } } }
+      responses:
+        '201': { description: First atomic submission, content: { application/json: { schema: { $ref: '#/components/schemas/IntakeResponse' } } } }
+        '200': { description: Exact idempotent replay, content: { application/json: { schema: { $ref: '#/components/schemas/IntakeResponse' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
   /discovery-runs:
-    get: { summary: List immutable discovery runs, responses: { '200': { description: Discovery runs } } }
+    get: { summary: List authorized immutable discovery runs, responses: { '200': { description: Authorized discovery runs } } }
     post:
       summary: Run explainable hybrid research discovery
-      description: Missing local model assets produce PARTIAL results; component weights are never rescaled.
+      description: Requires one persisted proposal ID. Missing local model assets produce PARTIAL results; component weights are never rescaled.
       parameters: [ { $ref: '#/components/parameters/CsrfHeader' } ]
       requestBody:
         required: true
@@ -198,17 +214,39 @@ paths:
       responses:
         '201': { description: Explainable ranked result, content: { application/json: { schema: { $ref: '#/components/schemas/DiscoveryRun' } } } }
   /proposal-decisions:
-    get: { summary: List immutable human route decisions, responses: { '200': { description: Proposal decisions } } }
+    get: { summary: List authorized immutable human route decisions, responses: { '200': { description: Authorized proposal decisions } } }
     post:
       summary: Record a human route; an approval atomically creates project baseline and continuity state
-      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
-      responses: { '201': { description: Immutable decision } }
+      description: The proposal and frozen run must match. Improve, Continue, and duplicate closure require a primary predecessor that is an actual candidate in that exact run.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ProposalDecisionRequest' } } } }
+      responses: { '201': { description: Immutable decision }, '403': { $ref: '#/components/responses/Problem' }, '422': { $ref: '#/components/responses/Problem' } }
+  /proposals/{id}/decision-context/{discoveryRunId}:
+    get:
+      summary: Read one explicitly selected proposal and its exact frozen discovery run
+      description: Returns no fallback proposal, run, candidate, or decision. A mismatched proposal/run pair is rejected.
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { in: path, name: discoveryRunId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Exact decision context, content: { application/json: { schema: { $ref: '#/components/schemas/DecisionContext' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
   /proposals/{id}/continuation-evidence:
     post:
-      summary: Record objective-to-open-item mappings and predecessor access for a CONTINUE route
+      summary: Append a revision of objective-to-open-item mappings and predecessor access for a CONTINUE route
       parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/CsrfHeader' } ]
       requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
-      responses: { '201': { description: Persisted continuation evidence }, '422': { $ref: '#/components/responses/Problem' } }
+      responses: { '201': { description: Append-only continuation evidence revision }, '422': { $ref: '#/components/responses/Problem' } }
+  /proposals/{id}/route-evidence/{predecessorId}:
+    get:
+      summary: Read assessed continuation and improvement prerequisites for an exact predecessor
+      description: Missing evidence is UNASSESSED and nullable numeric or boolean values are omitted rather than being represented as zero or false.
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { in: path, name: predecessorId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Assessed route prerequisites, content: { application/json: { schema: { $ref: '#/components/schemas/RouteAssessment' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
   /proposals/{id}/improvement-claims:
     post:
       summary: Record a predecessor limitation, baseline, target, and evaluation method
@@ -240,6 +278,17 @@ paths:
       summary: Read the current trace graph, findings, executions, and coverage
       parameters: [ { $ref: '#/components/parameters/Id' } ]
       responses: { '200': { description: Traceability assessment } }
+  /projects/{id}/trace-graph:
+    get:
+      summary: Read a bounded page of graph nodes and in-page relationships
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { in: query, name: page, schema: { type: integer, minimum: 0, default: 0 } }
+        - { in: query, name: size, schema: { type: integer, minimum: 1, default: 50 } }
+      responses:
+        '200':
+          description: Bounded graph page with explicit totals and truncated state
+          content: { application/json: { schema: { $ref: '#/components/schemas/TraceGraphPage' } } }
   /projects/{id}/findings:
     get:
       summary: Read current findings with stable fingerprints and effective dispositions
@@ -283,9 +332,20 @@ paths:
       responses: { '200': { description: Lineage graph } }
   /projects/{id}/completion-package:
     get:
-      summary: Read the continuity package and readiness evidence
+      summary: Read the server-derived continuity package and readiness evidence
       parameters: [ { $ref: '#/components/parameters/Id' } ]
-      responses: { '200': { description: Completion package } }
+      responses:
+        '200':
+          description: Completion package with nullable assessed values
+          content: { application/json: { schema: { $ref: '#/components/schemas/CompletionPackage' } } }
+  /projects/{id}/completion-package/evidence-references:
+    get:
+      summary: List append-only evidence references for the selected completion package
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses:
+        '200':
+          description: Project-scoped completion evidence references
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/EvidenceReference' } } } }
   /projects/{id}/analysis-runs:
     post:
       summary: Recalculate deterministic alignment analysis
@@ -327,10 +387,20 @@ paths:
       responses: { '201': { description: Approved baseline snapshot and new project ETag }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
   /projects/{id}/completion-package/evidence:
     post:
-      summary: Replace the structured continuity evidence assessment without directly patching package status
+      summary: Append references and recalculate continuity readiness on the server
       parameters: [ { $ref: '#/components/parameters/Id' }, { $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/CsrfHeader' } ]
-      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CompletionEvidenceInput' } } } }
       responses: { '200': { description: "Server-computed readiness/status, recalculated health, and new ETag" }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /projects/{id}/completion-package/evidence-references/{referenceId}/verification:
+    post:
+      summary: Append an independent adviser, coordinator, or reviewer verification
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { name: referenceId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/IfMatch' }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EvidenceVerificationInput' } } } }
+      responses: { '200': { description: "Appended verification, recalculated readiness, and new project ETag" }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
   /projects/{id}/complete:
     post:
       summary: Evaluate gates and, when eligible, atomically complete the project and publish its one linked catalogue study
@@ -341,7 +411,7 @@ paths:
     post:
       summary: Create a baseline-bound change request
       parameters: [ { $ref: '#/components/parameters/IfMatch' }, { $ref: '#/components/parameters/CsrfHeader' } ]
-      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ChangeInput' } } } }
       responses: { '201': { description: Change request }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
   /change-requests/{id}/preview-impact:
     post:
@@ -388,7 +458,40 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
       responses: { '201': { description: Append-only claim outcome }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
   /review-queue:
-    get: { summary: Read role-specific academic review actions, responses: { '200': { description: Review queue } } }
+    get:
+      deprecated: true
+      summary: Redirect a scoped legacy review URL to the canonical project inbox
+      parameters:
+        - { name: projectId, in: query, required: true, schema: { type: string, format: uuid } }
+      responses: { '308': { description: Canonical project review route } }
+  /projects/{id}/reviews:
+    get:
+      summary: Read the persisted project review inbox and append-only history
+      parameters: [ { $ref: '#/components/parameters/Id' } ]
+      responses:
+        '200':
+          description: Project-scoped research reviews
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ResearchReview' } } } }
+  /projects/{id}/reviews/{reviewId}/revision-requests:
+    post:
+      summary: Append an actor-attributed revision request
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { name: reviewId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/IfMatch' }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewMessageInput' } } } }
+      responses: { '200': { description: "Appended request, current review history, and new project ETag" }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
+  /projects/{id}/reviews/{reviewId}/revision-responses:
+    post:
+      summary: Append an actor-attributed response to the current revision request
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { name: reviewId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/IfMatch' }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewMessageInput' } } } }
+      responses: { '200': { description: "Appended response, current review history, and new project ETag" }, '412': { $ref: '#/components/responses/Problem' }, '428': { $ref: '#/components/responses/Problem' } }
   /algorithm-disclosure:
     get: { summary: "Read formula, model status, fallback, and decision boundary", responses: { '200': { description: Algorithm disclosure } } }
   /users:
@@ -658,12 +761,23 @@ components:
   parameters:
     Id: { in: path, name: id, required: true, schema: { type: string, format: uuid } }
     IfMatch: { in: header, name: If-Match, required: true, schema: { type: string }, description: Exact ETag returned by the project resource; wildcard values are rejected }
+    IdempotencyKey: { in: header, name: Idempotency-Key, required: true, schema: { type: string, minLength: 1, maxLength: 128 }, description: Stable per-account key reused only when retrying the same normalized intake }
     CsrfHeader: { in: header, name: X-XSRF-TOKEN, required: true, schema: { type: string }, description: Token returned by GET /auth/csrf and paired with its session cookie }
   responses:
     Problem:
       description: RFC 9457 problem detail
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
   schemas:
+    RouteAssessment:
+      type: object
+      required: [continuationState, improvementState]
+      properties:
+        continuationState: { enum: [ASSESSED, PARTIAL, UNASSESSED, UNAVAILABLE] }
+        continuationCoverage: { type: [number, 'null'], format: double, minimum: 0, maximum: 100 }
+        codeAccess: { type: [boolean, 'null'] }
+        dataAccess: { type: [boolean, 'null'] }
+        improvementState: { enum: [ASSESSED, PARTIAL, UNASSESSED, UNAVAILABLE] }
+        improvementClaimCount: { type: [integer, 'null'], minimum: 1 }
     AuthView:
       type: object
       required: [authenticated, roles]
@@ -1159,26 +1273,202 @@ components:
         assessmentStatus: { enum: [UNASSESSED, ASSESSED] }
         total: { type: integer, minimum: 0, description: Authorized total before the requested result limit }
         items: { type: array, items: { $ref: '#/components/schemas/WarehouseContinuationHistoryItem' } }
+    IntakeRequest:
+      type: object
+      required: [problem, proposal]
+      properties:
+        problem: { $ref: '#/components/schemas/IntakeProblem' }
+        proposal: { $ref: '#/components/schemas/IntakeProposal' }
+        evidenceReferences: { type: array, items: { $ref: '#/components/schemas/EvidenceReferenceInput' } }
+    IntakeProblem:
+      type: object
+      required: [title, problemStatement, stakeholder, affectedUsers, siteContext, desiredOutcome, privacyClassification]
+      properties:
+        title: { type: string, maxLength: 400 }
+        problemStatement: { type: string, minLength: 40 }
+        stakeholder: { type: string }
+        affectedUsers: { type: string }
+        siteContext: { type: string }
+        desiredOutcome: { type: string }
+        constraints: { type: [string, 'null'] }
+        privacyClassification: { enum: [PUBLIC, INTERNAL, RESTRICTED] }
+    IntakeProposal:
+      type: object
+      required: [title, objectives, proposedSolution]
+      properties:
+        title: { type: string, maxLength: 500 }
+        objectives: { type: array, minItems: 1, items: { type: string, minLength: 1 } }
+        proposedSolution: { type: string, minLength: 1 }
+        methodology: { type: [string, 'null'] }
+        dataSources: { type: [string, 'null'] }
+        technology: { type: [string, 'null'] }
+        intendedUsers: { type: [string, 'null'] }
+    EvidenceReferenceInput:
+      type: object
+      required: [type, label]
+      properties:
+        type: { enum: [DOCUMENT, URL, REPOSITORY, OUTPUT, TEST_RUN, DATASET, OTHER] }
+        label: { type: string, maxLength: 300 }
+        location: { type: [string, 'null'], maxLength: 1000 }
+        storedDocumentId: { type: [string, 'null'], format: uuid }
+        sha256: { type: [string, 'null'], pattern: '^[0-9a-fA-F]{64}$' }
+      description: At least one of location or storedDocumentId is required. Newly recorded references are UNVERIFIED until independently checked.
+    EvidenceReference:
+      allOf:
+        - { $ref: '#/components/schemas/EvidenceReferenceInput' }
+        - type: object
+          required: [id, verificationState, capturedAt]
+          properties:
+            id: { type: string, format: uuid }
+            verificationState: { enum: [UNVERIFIED, VERIFIED, REJECTED, UNAVAILABLE] }
+            capturedAt: { type: string, format: date-time }
+    AssessedValue:
+      type: object
+      required: [state]
+      properties:
+        state: { enum: [ASSESSED, PARTIAL, UNASSESSED, UNAVAILABLE] }
+        value: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        source: { type: [string, 'null'] }
+        assessedAt: { type: [string, 'null'], format: date-time }
+    ContinuityCriterion:
+      allOf:
+        - { $ref: '#/components/schemas/AssessedValue' }
+        - type: object
+          required: [key, label, weight, explanation]
+          properties:
+            key: { type: string }
+            label: { type: string }
+            weight: { type: integer, minimum: 0, maximum: 100 }
+            explanation: { type: string }
+    CompletionPackage:
+      type: object
+      required: [id, projectId, status, readinessState, codeDataRightsConfirmed, criteria, blockers, repositoryUrl, commitHash, setupInstructions, limitations, recommendations, unfinishedWork]
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        status: { enum: [IN_PROGRESS, READY, COMPLETE] }
+        readinessState: { enum: [ASSESSED, PARTIAL, UNASSESSED, UNAVAILABLE] }
+        readinessScore: { type: [number, 'null'], minimum: 0, maximum: 100 }
+        codeDataRightsConfirmed: { type: boolean, description: True only after independent verification of rights evidence. }
+        criteria: { type: array, items: { $ref: '#/components/schemas/ContinuityCriterion' } }
+        blockers: { type: array, items: { type: string } }
+        repositoryUrl: { type: string }
+        commitHash: { type: string }
+        setupInstructions: { type: string }
+        limitations: { type: array, items: { type: string } }
+        recommendations: { type: array, items: { type: string } }
+        unfinishedWork: { type: array, items: { type: string } }
+    CompletionEvidenceInput:
+      type: object
+      properties:
+        repositoryUrl: { type: [string, 'null'], maxLength: 700 }
+        commitHash: { type: [string, 'null'], maxLength: 80 }
+        setupInstructions: { type: [string, 'null'] }
+        limitations: { type: array, items: { type: string, minLength: 1 } }
+        recommendations: { type: array, items: { type: string, minLength: 1 } }
+        unfinishedWork: { type: array, items: { type: string, minLength: 1 } }
+        evidenceReferences: { type: array, items: { $ref: '#/components/schemas/EvidenceReferenceInput' } }
+    EvidenceVerificationInput:
+      type: object
+      required: [verificationState, notes]
+      properties:
+        verificationState: { enum: [VERIFIED, REJECTED, UNAVAILABLE] }
+        notes: { type: string, minLength: 20, maxLength: 1000 }
+    ReviewMessageInput:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string, minLength: 20, maxLength: 2000 }
+        evidenceLocation: { type: [string, 'null'], maxLength: 1000 }
+    ResearchReviewEvent:
+      type: object
+      required: [id, eventType, message, actorEmail, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        eventType: { enum: [REVISION_REQUESTED, REVISION_RESPONDED] }
+        message: { type: string }
+        evidenceLocation: { type: [string, 'null'] }
+        actorEmail: { type: string, format: email }
+        createdAt: { type: string, format: date-time }
+    ResearchReview:
+      type: object
+      required: [id, projectId, type, title, projectCode, severity, requiredRole, reason, dueAt, status, history]
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        type: { type: string }
+        title: { type: string }
+        projectCode: { type: string }
+        severity: { enum: [INFO, LOW, MODERATE, HIGH, CRITICAL] }
+        requiredRole: { type: string }
+        reason: { type: string }
+        dueAt: { type: string, format: date-time }
+        status: { enum: [OPEN, REVISION_REQUESTED, REVISION_RESPONDED] }
+        history: { type: array, items: { $ref: '#/components/schemas/ResearchReviewEvent' } }
+    TraceGraphPage:
+      type: object
+      required: [nodes, edges, page, size, totalNodes, totalEdges, truncated]
+      properties:
+        nodes: { type: array, maxItems: 500, items: { type: object } }
+        edges: { type: array, maxItems: 1000, items: { type: object } }
+        page: { type: integer, minimum: 0 }
+        size: { type: integer, minimum: 1 }
+        totalNodes: { type: integer, minimum: 0 }
+        totalEdges: { type: integer, minimum: 0 }
+        truncated: { type: boolean }
+    IntakeResponse:
+      type: object
+      required: [idempotencyKey, replayed, problem, proposal, discovery, evidenceReferences]
+      properties:
+        idempotencyKey: { type: string }
+        replayed: { type: boolean }
+        problem: { type: object }
+        proposal: { type: object }
+        discovery: { $ref: '#/components/schemas/DiscoveryRun' }
+        evidenceReferences: { type: array, items: { $ref: '#/components/schemas/EvidenceReference' } }
     DiscoveryInput:
       type: object
-      required: [title, problemStatement, objectives, stakeholders, siteContext, domainTerms]
+      required: [proposalId]
       properties:
-        title: { type: string }
-        problemStatement: { type: string }
-        objectives: { type: array, items: { type: string } }
-        stakeholders: { type: array, items: { type: string } }
-        siteContext: { type: string }
-        domainTerms: { type: array, items: { type: string } }
+        proposalId: { type: string, format: uuid }
+    ChangeInput:
+      type: object
+      required: [projectId, basedOnBaselineId, title, rationale, changedItemIds]
+      properties:
+        projectId: { type: string, format: uuid }
+        basedOnBaselineId: { type: string, format: uuid, description: Exact current baseline; omission or mismatch is rejected }
+        title: { type: string, minLength: 1 }
+        rationale: { type: string, minLength: 20 }
+        changedItemIds: { type: array, minItems: 1, items: { type: string, format: uuid } }
+        boundaryFlags: { type: array, items: { type: string } }
     DiscoveryRun:
       type: object
-      required: [id, status, recommendation, confidence, candidates, algorithmVersion]
+      required: [id, status, recommendation, confidenceState, candidates, algorithmVersion]
       properties:
         id: { type: string, format: uuid }
         status: { enum: [ASSESSED, UNASSESSED, STALE, PARTIAL] }
         recommendation: { enum: [NEW, IMPROVE, CONTINUE, POSSIBLE_DUPLICATE, REVIEW_REQUIRED] }
-        confidence: { type: number, minimum: 0, maximum: 100 }
+        confidenceState: { enum: [ASSESSED, PARTIAL, UNASSESSED, UNAVAILABLE] }
+        confidence: { type: [number, 'null'], minimum: 0, maximum: 100 }
         candidates: { type: array, items: { $ref: '#/components/schemas/Study' } }
         algorithmVersion: { type: string }
+    ProposalDecisionRequest:
+      type: object
+      required: [proposalId, discoveryRunId, disposition, rationale]
+      properties:
+        proposalId: { type: string, format: uuid }
+        discoveryRunId: { type: string, format: uuid }
+        disposition: { enum: [APPROVE_NEW, APPROVE_IMPROVE, APPROVE_CONTINUE, RETURN_FOR_REVISION, CLOSE_AS_DUPLICATE] }
+        rationale: { type: string, minLength: 20 }
+        primaryPredecessorId: { type: [string, 'null'], format: uuid }
+    DecisionContext:
+      type: object
+      required: [proposal, discovery, adviserRecommendations]
+      properties:
+        proposal: { type: object }
+        discovery: { type: object, description: Exact persisted DiscoveryRun with only authorized candidates }
+        decision: { type: [object, 'null'] }
+        adviserRecommendations: { type: array, items: { type: object } }
     Study:
       type: object
       required: [id, code, title, year, program, status, abstract, authors, keywords, problemSimilarity, solutionSimilarity, objectiveOverlap, confidence, relationship, matchReason, excerpt]

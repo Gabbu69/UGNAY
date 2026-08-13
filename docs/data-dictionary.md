@@ -102,7 +102,7 @@ The runtime identity provider persists the bootstrap administrator, active crede
 | `test_executions` | `test_case_id`, `baseline_id`, `build_reference`, `status`, `executed_by`, `executed_at`, `evidence_document_version_id`, `current` | Current only when test, target requirements, baseline, and build still match |
 | `repository_references` | `project_id`, `provider`, `repository_url`, `commit_hash`, `release_tag`, `access_status`, `license_name` | Reference only; no credentials or Git hosting |
 | `release_snapshots` | `project_id`, `baseline_id`, `repository_reference_id`, `released_at`, `setup_document_id` | Reproducible output anchor |
-| `completion_packages` | `project_id`, `status`, readiness dimensions, `rights_confirmed`, `approved_by`, `completed_at`, `row_version` | One approved completion package per project |
+| `completion_packages` | `project_id`, `package_status`, `readiness_state`, nullable projected `readiness_score`, derived `code_data_rights_confirmed`, `completed_by`, `completed_at`, `row_version` | One completion package per project; the score is serialized only when every criterion has a numeric assessed value |
 | `completion_package_items` | `completion_package_id`, `item_type`, `document_id`, `repository_reference_id`, `statement`, `complete` | Required handoff components |
 | `continuation_item_claims` | `successor_project_id`, `continuation_item_id`, `objective_item_id`, `claimed_by`, `claimed_at`, `status` | Successor claims predecessor work without editing it |
 | `continuation_claim_outcomes` | `claim_id`, `outcome_type`, `statement`, `evidence_item_id`, `recorded_at` | Completed, partial, deferred, or invalidated result |
@@ -131,6 +131,8 @@ The runtime identity provider persists the bootstrap administrator, active crede
 ## Runtime projection support (Flyway V3)
 
 The executable V3 migration adds relational child tables needed to reconstruct the complete browser workspace without serializing its evidence chain. These include `discovery_revision_checklist`, `candidate_evidence_components`, `candidate_component_terms`, `project_team_members`, `trace_coverage_snapshots`, `scope_risk_snapshots`, `scope_risk_explanations`, `change_request_boundary_flags`, `impact_previews`, `impact_path_nodes`, `impact_documents_to_revise`, `completion_criteria`, `lineage_nodes`, `lineage_edges`, `health_dimensions`, and `review_queue_items`. It also adds the project/current-baseline composite constraint so a project cannot point at another project's baseline. Core relationships remain queryable rows; inherited JSON columns are used only for frozen configuration placeholders.
+
+V11 persists atomic intake retry keys and generic evidence references, binds impact previews to operation-set versions and digests, and project-scopes review items. V12 adds assessed state, source, and time to completion criteria plus append-only independent reference verifications. V13 adds actor-attributed, append-only research review events for revision requests and responses; queue items are no longer deleted and regenerated during startup. V14 adds append-only `proposal_continuation_evidence_revisions` plus `proposal_continuation_revision_objectives`; each save creates a new revision and objective-link set, while the latest revision drives the assessed route state without rewriting V5 history. V15 makes `discovery_runs.confidence_score` nullable so a run with no eligible candidate records `UNASSESSED` plus `NULL`, never a fabricated zero.
 
 ## Durable extraction support (Flyway V4)
 

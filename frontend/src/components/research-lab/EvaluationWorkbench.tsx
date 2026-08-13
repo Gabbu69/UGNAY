@@ -44,8 +44,8 @@ export function EvaluationWorkbench() {
   const canReview = coordinator || roles.includes('ADVISER')
   const datasets = useQuery({ queryKey: ['evaluation-datasets'], queryFn: listEvaluationDatasets })
   const [selectedVersion, setSelectedVersion] = useState('')
-  const selectedId = selectedVersion || datasets.data?.[0]?.versionId || ''
-  const selected = datasets.data?.find((value) => value.versionId === selectedId)
+  const selected = datasets.data?.find((value) => value.versionId === selectedVersion)
+  const selectedId = selected?.versionId ?? ''
   const queries = useQuery({
     queryKey: ['evaluation-queries', selectedId],
     queryFn: () => listEvaluationQueries(selectedId),
@@ -56,7 +56,13 @@ export function EvaluationWorkbench() {
     queryKey: ['evaluation-run', activeRunId],
     queryFn: () => getEvaluationRun(activeRunId),
     enabled: Boolean(activeRunId),
-    refetchInterval: (query) => ['QUEUED', 'RUNNING'].includes((query.state.data as EvaluationRun | undefined)?.status ?? '') ? 1500 : false,
+    refetchInterval: (query) => {
+      if (document.hidden) return false
+      const status = (query.state.data as EvaluationRun | undefined)?.status
+      return status === 'QUEUED' ? 5_000 : status === 'RUNNING' ? 2_500 : false
+    },
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
   })
   const terminal = run.data && ['COMPLETED', 'PARTIAL', 'UNAVAILABLE', 'FAILED'].includes(run.data.status)
   const report = useQuery({
@@ -95,13 +101,14 @@ export function EvaluationWorkbench() {
   const [reviewGrade, setReviewGrade] = useState('1')
   const [reviewRationale, setReviewRationale] = useState('')
   const [reviewAction, setReviewAction] = useState<'JUDGMENT' | 'ADJUDICATION'>('JUDGMENT')
+  const reviewQuery = queries.data?.find((query) => query.id === reviewQueryId)
   const recordReview = useMutation({
     mutationFn: () => {
-      const queryId = reviewQueryId || queries.data?.[0]?.id || ''
+      if (!reviewQuery) throw new Error('Select the exact evaluation query before recording relevance evidence.')
       const grade = Number(reviewGrade)
       return reviewAction === 'ADJUDICATION'
-        ? adjudicateEvaluationQrel(queryId, reviewStudyId, grade, reviewRationale)
-        : submitEvaluationJudgment(queryId, reviewStudyId, grade, reviewRationale)
+        ? adjudicateEvaluationQrel(reviewQuery.id, reviewStudyId, grade, reviewRationale)
+        : submitEvaluationJudgment(reviewQuery.id, reviewStudyId, grade, reviewRationale)
     },
     onSuccess: () => {
       setReviewStudyId(''); setReviewRationale('')
@@ -131,10 +138,10 @@ export function EvaluationWorkbench() {
       <section className="evaluation-controls paper-panel">
         <div className="lab-section-heading"><div><span>FROZEN EXPERIMENT INPUT</span><h2>Dataset manifest</h2></div>{selected ? <StatusPill tone={tone(selected.status)}>{selected.status}</StatusPill> : null}</div>
         <div className="dataset-toolbar">
-          <label><span>Dataset version</span><select value={selectedId} onChange={(event) => { setSelectedVersion(event.target.value); setReviewQueryId('') }} disabled={!datasets.data?.length}>{datasets.data?.length ? datasets.data.map((value) => <option key={value.versionId} value={value.versionId}>{value.name} · v{value.version} · {value.status}</option>) : <option value="">No dataset available</option>}</select></label>
+          <label><span>Dataset version</span><select value={selectedId} onChange={(event) => { setSelectedVersion(event.target.value); setReviewQueryId(''); setActiveRunId('') }} disabled={!datasets.data?.length}><option value="" disabled>{datasets.data?.length ? 'Select an exact dataset version' : 'No dataset available'}</option>{datasets.data?.map((value) => <option key={value.versionId} value={value.versionId}>{value.name} · v{value.version} · {value.status}</option>)}</select></label>
           {canRun ? <button type="button" className="button button-primary" disabled={!selected || selected.status !== 'FROZEN' || startRun.isPending} onClick={() => startRun.mutate()}><Play size={16} />{startRun.isPending ? 'Queueing…' : 'Run four-arm comparison'}</button> : null}
         </div>
-        {selected ? <dl className="manifest-grid"><div><dt>Corpus</dt><dd>{selected.corpusSize} immutable studies</dd></div><div><dt>Queries</dt><dd>{selected.queryCount}</dd></div><div><dt>Adjudicated qrels</dt><dd>{selected.adjudicatedQrelCount}</dd></div><div><dt>Corpus SHA-256</dt><dd><code title={selected.corpusSha256}>{selected.corpusSha256.slice(0, 16)}…</code></dd></div><div><dt>Dataset SHA-256</dt><dd>{selected.datasetSha256 ? <code title={selected.datasetSha256}>{selected.datasetSha256.slice(0, 16)}…</code> : 'UNASSESSED until freeze'}</dd></div><div><dt>Frozen at</dt><dd>{selected.frozenAt ? new Date(selected.frozenAt).toLocaleString() : 'Not frozen'}</dd></div></dl> : <div className="lab-empty inline"><Fingerprint size={21} /><div><strong>No evaluation dataset exists yet.</strong><span>A curator can snapshot the actual catalogue. UGNAY does not ship fabricated thesis metrics.</span></div></div>}
+        {selected ? <dl className="manifest-grid"><div><dt>Corpus</dt><dd>{selected.corpusSize} immutable studies</dd></div><div><dt>Queries</dt><dd>{selected.queryCount}</dd></div><div><dt>Adjudicated qrels</dt><dd>{selected.adjudicatedQrelCount}</dd></div><div><dt>Corpus SHA-256</dt><dd><code title={selected.corpusSha256}>{selected.corpusSha256.slice(0, 16)}…</code></dd></div><div><dt>Dataset SHA-256</dt><dd>{selected.datasetSha256 ? <code title={selected.datasetSha256}>{selected.datasetSha256.slice(0, 16)}…</code> : 'UNASSESSED until freeze'}</dd></div><div><dt>Frozen at</dt><dd>{selected.frozenAt ? new Date(selected.frozenAt).toLocaleString() : 'Not frozen'}</dd></div></dl> : <div className="lab-empty inline"><Fingerprint size={21} /><div><strong>{datasets.data?.length ? 'Select an evaluation dataset.' : 'No evaluation dataset exists yet.'}</strong><span>{datasets.data?.length ? 'Dataset facts and actions stay unavailable until you choose one persisted version.' : 'A curator can snapshot the actual catalogue. UGNAY does not ship fabricated thesis metrics.'}</span></div></div>}
       </section>
 
       {(curator || coordinator) ? <section className="evidence-authoring-grid">
@@ -151,14 +158,14 @@ export function EvaluationWorkbench() {
       {canReview && selected?.status === 'DRAFT' && queries.data?.length ? <section className="paper-panel evaluation-review-panel">
         <div className="lab-section-heading"><div><span>HUMAN GROUND TRUTH</span><h2>Record independent relevance evidence</h2></div><StatusPill tone="violet">Grade 0–3</StatusPill></div>
         <form className="evaluation-review-form" onSubmit={submitReview}>
-          <label><span>Evaluation query</span><select value={reviewQueryId || queries.data[0].id} onChange={(event) => setReviewQueryId(event.target.value)}>{queries.data.map((query) => <option key={query.id} value={query.id}>{query.externalKey} · {query.title}</option>)}</select></label>
+          <label><span>Evaluation query</span><select required value={reviewQuery?.id ?? ''} onChange={(event) => setReviewQueryId(event.target.value)}><option value="" disabled>Select an exact structured query</option>{queries.data.map((query) => <option key={query.id} value={query.id}>{query.externalKey} · {query.title}</option>)}</select></label>
           <label><span>Authorized catalogue study UUID</span><input required pattern="[0-9a-fA-F-]{36}" value={reviewStudyId} onChange={(event) => setReviewStudyId(event.target.value)} placeholder="00000000-0000-0000-0000-000000000000" /><small>Copy the study ID from Research Atlas. The server verifies that it belongs to this corpus and is visible to you.</small></label>
           <div className="form-two">
             <label><span>Relevance grade</span><select value={reviewGrade} onChange={(event) => setReviewGrade(event.target.value)}><option value="0">0 · Not relevant</option><option value="1">1 · Marginally relevant</option><option value="2">2 · Relevant</option><option value="3">3 · Highly relevant</option></select></label>
             {coordinator ? <label><span>Evidence action</span><select value={reviewAction} onChange={(event) => setReviewAction(event.target.value as 'JUDGMENT' | 'ADJUDICATION')}><option value="JUDGMENT">Independent judgment</option><option value="ADJUDICATION">Coordinator adjudication</option></select></label> : null}
           </div>
           <label><span>Evidence rationale</span><textarea required maxLength={4000} value={reviewRationale} onChange={(event) => setReviewRationale(event.target.value)} placeholder="Explain why this study receives the selected grade." /></label>
-          <div className="review-form-footer"><p>Two distinct reviewers are required. Adjudication remains a separate coordinator action and never changes a thesis route.</p><button className="button button-secondary" disabled={recordReview.isPending}>{recordReview.isPending ? 'Recording…' : reviewAction === 'ADJUDICATION' ? 'Record adjudicated qrel' : 'Record judgment'}</button></div>
+          <div className="review-form-footer"><p>Two distinct reviewers are required. Adjudication remains a separate coordinator action and never changes a thesis route.</p><button className="button button-secondary" disabled={!reviewQuery || recordReview.isPending}>{recordReview.isPending ? 'Recording…' : reviewAction === 'ADJUDICATION' ? 'Record adjudicated qrel' : 'Record judgment'}</button></div>
         </form>
       </section> : null}
 
@@ -171,7 +178,7 @@ export function EvaluationWorkbench() {
       {report.data ? <section className="algorithm-report">
         <div className="lab-section-heading"><div><span>AUTHORITATIVE COMPARISON</span><h2>Algorithm results at K = 5</h2></div><a className="button button-secondary" href={evaluationCsvUrl(report.data.run.id)}><Download size={16} />Export CSV</a></div>
         <div className="table-scroll"><table className="lab-table metrics-table"><thead><tr><th>Algorithm / version</th><th>Status</th><th>Precision</th><th>Recall</th><th>F1</th><th>MRR</th><th>NDCG</th><th>p50 / p95</th></tr></thead><tbody>{report.data.algorithms.map((algorithm) => { const primary = primaryMetric(algorithm.aggregateMetrics); return <tr key={algorithm.algorithmRunId}><td><strong>{algorithm.algorithm.replaceAll('_', ' ')}</strong><small>{algorithm.version}</small></td><td><StatusPill tone={tone(algorithm.status)}>{algorithm.status}</StatusPill>{algorithm.unavailableReason ? <small>{algorithm.unavailableReason}</small> : null}</td><td>{metric(primary?.precision, primary?.status)}</td><td>{metric(primary?.recall, primary?.status)}</td><td>{metric(primary?.f1, primary?.status)}</td><td>{metric(primary?.mrr, primary?.status)}</td><td>{metric(primary?.ndcg, primary?.status)}</td><td>{algorithm.latencyP50Millis == null ? 'UNAVAILABLE' : `${algorithm.latencyP50Millis.toFixed(1)} / ${algorithm.latencyP95Millis?.toFixed(1) ?? '—'} ms`}</td></tr> })}</tbody></table></div>
-        <div className="evaluation-metric-chart" aria-label="NDCG at five comparison chart">{report.data.algorithms.map((algorithm) => { const primary = primaryMetric(algorithm.aggregateMetrics); const value = primary?.status === 'AVAILABLE' ? primary.ndcg ?? 0 : 0; return <div key={algorithm.algorithmRunId}><span>{algorithm.algorithm.replaceAll('_', ' ')}</span><i><b style={{ width: `${Math.max(0, Math.min(100, value * 100))}%` }} /></i><strong>{primary?.status === 'AVAILABLE' ? value.toFixed(3) : 'UNAVAILABLE'}</strong></div> })}</div>
+        <div className="evaluation-metric-chart" aria-label="NDCG at five comparison chart">{report.data.algorithms.map((algorithm) => { const primary = primaryMetric(algorithm.aggregateMetrics); const assessed = primary?.status === 'AVAILABLE' && primary.ndcg != null; const value = assessed ? primary.ndcg as number : undefined; return <div key={algorithm.algorithmRunId}><span>{algorithm.algorithm.replaceAll('_', ' ')}</span><i><b style={{ width: value == null ? '0%' : `${Math.max(0, Math.min(100, value * 100))}%` }} /></i><strong>{value == null ? 'UNAVAILABLE' : value.toFixed(3)}</strong></div> })}</div>
         <div className="per-query-reports"><h3>Per-query metric drilldown</h3>{report.data.algorithms.map((algorithm) => <details key={algorithm.algorithmRunId}><summary><strong>{algorithm.version}</strong><span>{algorithm.queryMetrics.length} query × cutoff rows</span><ChevronDown size={16} /></summary><div className="table-scroll"><table className="lab-table"><thead><tr><th>Query</th><th>K</th><th>Status</th><th>Relevant / judged</th><th>Precision</th><th>Recall</th><th>F1</th><th>MRR</th><th>NDCG</th></tr></thead><tbody>{algorithm.queryMetrics.map((row) => <tr key={`${row.queryId}-${row.k}`}><td><code>{row.queryKey}</code></td><td>{row.k}</td><td>{row.status}</td><td>{row.relevantCount} / {row.judgedCount}</td><td>{metric(row.precision, row.status)}</td><td>{metric(row.recall, row.status)}</td><td>{metric(row.f1, row.status)}</td><td>{metric(row.mrr, row.status)}</td><td>{metric(row.ndcg, row.status)}</td></tr>)}</tbody></table></div></details>)}</div>
         <div className="report-boundary"><CheckCircle2 size={17} /><p>{report.data.interpretationBoundary}</p></div>
         <details className="environment-manifest"><summary><Gauge size={16} /><strong>Parameters and captured environment</strong><ChevronDown size={16} /></summary><div><section><h3>Environment</h3><pre>{JSON.stringify(report.data.environment, null, 2)}</pre></section><section><h3>Reproducibility manifest</h3><pre>{JSON.stringify(report.data.manifest, null, 2)}</pre></section></div></details>

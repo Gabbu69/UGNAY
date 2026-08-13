@@ -12,6 +12,7 @@ The pilot has four boundaries:
 - The ONNX model is local deployment data; no project text is sent to its source repository at inference time.
 - UGNAY RQL is untrusted input. Only its documented grammar reaches a typed allow-listed plan; no language token becomes SQL, a permission, or an academic action.
 - Evaluation and warehouse rows are sensitive derived evidence. A frozen copy or aggregate does not relax the source study's visibility, department, or project-membership boundary.
+- On Windows Lite, memory-intensive work shares one fair permit. Durable extraction, evaluation, and warehouse requests wait without losing their MySQL state; interactive semantic inference yields an explicit temporary-unavailability explanation and lexical `PARTIAL` evidence.
 
 Accounts, Argon2id credentials, roles, invitations, explicit project memberships, and sessions are persisted in MySQL. The browser account panel has authenticated, anonymous, and unavailable states plus a curator access desk for issuing invitations and granting selected-project membership. The raw single-use token must still be delivered out of band and accepted through the public API. Automated delivery, password reset, account disablement, and global role reassignment are not implemented.
 
@@ -23,6 +24,8 @@ Accounts, Argon2id credentials, roles, invitations, explicit project memberships
 - Keep CSRF protection enabled for all session-authenticated mutations.
 - Authorize by institutional role, department visibility, project membership, and record state—not by a UI control alone.
 - Log decisions, overrides, role changes, exports, restricted-document access, accepted findings, baseline approvals, and completion.
+- Completion reference verification is append-only and rejects self-verification. Review revision requests and responses record the authenticated actor and exact project boundary.
+- Workspace graphs are bounded; Lite returns at most 500 nodes and 1,000 edges per response and explicitly reports truncation. The paged project graph endpoint caps every requested page.
 - Redact secrets, session identifiers, proposal text, and document contents from logs.
 - Rate-limit login, invitation acceptance, uploads, discovery runs, and expensive analysis actions.
 - Require an authenticated server session for catalogue search, RQL, evaluation, and warehouse endpoints. All their POST operations remain CSRF-protected; none uses a browser token or bypass header.
@@ -76,7 +79,7 @@ Scanned PDFs are not OCR'd in v1. Low-text extraction creates a manual-metadata 
 
 ## Windows Lite operations
 
-The supported low-memory setup is `scripts\windows\setup-lite.ps1`. It checksum-verifies every portable dependency, binds MySQL on `127.0.0.1:3307`, protects credentials with DPAPI, and keeps runtime/data/documents/logs/backups outside the clone. Use the root Start/Stop/Backup/Update launchers. The updater makes a safety backup and rolls back the commit, installed release pointer, database, and documents when migration or health verification fails. Port ownership is validated before any stop/kill action.
+The supported low-memory installer is `scripts\windows\setup-lite.ps1`. It checksum-verifies every portable dependency, binds MySQL on `127.0.0.1:3307`, protects credentials with DPAPI, and keeps runtime/data/documents/logs/backups outside the clone. It is not currently installable from GitHub because the complete matching `v0.2.0` JAR, INT8 model, tokenizer ZIP, and checksum assets have not been published. Do not present the installer as available until those assets exist and a clean install plus offline restart pass. Once released, use the root Start/Stop/Backup/Update launchers. The updater makes a safety backup and rolls back the commit, installed release pointer, database, and documents when migration or health verification fails. Port ownership is validated before any stop/kill action.
 
 Lite document ingestion fails closed when Windows Defender cannot scan; discovery continues lexically when available RAM is below the semantic threshold or the INT8 model cannot load. Neither fallback is reported as a complete assessment.
 
