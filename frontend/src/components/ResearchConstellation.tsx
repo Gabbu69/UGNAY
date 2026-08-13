@@ -32,11 +32,11 @@ export function ResearchConstellation({ studies, selectedId, onSelect }: { studi
             key={study.id}
             type="button"
             className={`constellation-node ${selectedId === study.id ? 'is-selected' : ''}`}
-            style={{ left: `${point.x}%`, top: `${point.y}%`, '--strength': study.problemSimilarity / 100 } as React.CSSProperties}
+            style={{ left: `${point.x}%`, top: `${point.y}%`, '--strength': (study.problemSimilarity ?? 0) / 100 } as React.CSSProperties}
             onClick={() => onSelect(study.id)}
-            aria-label={`${study.title}, ${study.problemSimilarity}% problem similarity`}
+            aria-label={`${study.title}, ${study.problemSimilarity == null ? 'similarity unassessed' : `${study.problemSimilarity}% problem similarity`}`}
           >
-            <span>{study.problemSimilarity}</span>
+            <span>{study.problemSimilarity ?? '—'}</span>
             <small>{study.code}</small>
           </button>
         )

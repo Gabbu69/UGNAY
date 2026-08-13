@@ -68,7 +68,7 @@ public final class ChangeImpactAnalyzer {
             if (artifact.itemType() == TraceItemType.OUTPUT) documents.add("Final Output and User Documentation");
         }
         boolean current = project.currentBaselineId() != null && project.currentBaselineId().equals(request.basedOnBaselineId());
-        return new ImpactPreview(request.id(), request.basedOnBaselineId(), current, risk, impacted, List.copyOf(documents), Instant.now());
+        return new ImpactPreview(request.id(), request.basedOnBaselineId(), current, risk, impacted, List.copyOf(documents), Instant.now(), 0, null);
     }
 
     private static ImpactedArtifact artifact(TraceItem item, List<UUID> path) {

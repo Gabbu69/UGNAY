@@ -19,6 +19,7 @@ import java.security.MessageDigest;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -41,9 +42,13 @@ public class WorkflowActionService {
             List<RoutingEvidenceRepository.ObjectiveLink> links, boolean codeAccess, boolean dataAccess,
             String notes, String actor) {
         var result = routing.saveContinuation(proposalId, predecessorId, links, codeAccess, dataAccess, notes, actor);
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("predecessorStudyId", predecessorId.toString());
+        details.put("assessmentState", result.state().name());
+        if (result.objectiveCoverage() != null) details.put("objectiveCoverage", result.objectiveCoverage());
         audit.append(actor, "CONTINUATION_EVIDENCE_RECORDED", "PROPOSAL", proposalId,
                 "Recorded objective mappings and predecessor access evidence.",
-                Map.of("predecessorStudyId", predecessorId.toString(), "objectiveCoverage", result.objectiveCoverage()));
+                details);
         return result;
     }
 
@@ -82,6 +87,11 @@ public class WorkflowActionService {
                 (row, index) -> new AdviserRecommendation(uuid(row.getBytes(1)), uuid(row.getBytes(2)), uuid(row.getBytes(3)),
                         Recommendation.valueOf(row.getString(4)), row.getString(5), row.getString(6), row.getTimestamp(7).toInstant()),
                 bytes(proposalId));
+    }
+
+    public List<AdviserRecommendation> adviserRecommendations(UUID proposalId, UUID discoveryRunId) {
+        return adviserRecommendations(proposalId).stream()
+                .filter(recommendation -> recommendation.discoveryRunId().equals(discoveryRunId)).toList();
     }
 
     @Transactional
@@ -135,6 +145,7 @@ public class WorkflowActionService {
                 bytes(id), bytes(changeRequestId), order, type.name(), nullable(targetItemId), itemType == null ? null : itemType.name(),
                 clean(itemKey), clean(title), clean(description), clean(priority), clean(acceptanceCriteria), clean(verificationMethod),
                 nullable(sourceItemId), nullable(linkTargetItemId), clean(relationshipType), removeRelationship, required(rationale, "Operation rationale"));
+        jdbc.update("UPDATE change_requests SET operation_set_version=operation_set_version+1 WHERE id=?", bytes(changeRequestId));
         audit.append(actor, "CHANGE_OPERATION_ADDED", "CHANGE_REQUEST", changeRequestId,
                 "Added a typed, baseline-bound change operation.", Map.of("operationId", id.toString(), "type", type.name()));
         return new ChangeOperation(id, changeRequestId, order, type, targetItemId, itemType, clean(itemKey), clean(title),
@@ -149,6 +160,13 @@ public class WorkflowActionService {
                         row.getString(6) == null ? null : TraceItemType.valueOf(row.getString(6)), row.getString(7), row.getString(8),
                         row.getString(9), row.getString(10), row.getString(11), row.getString(12), uuidOrNull(row.getBytes(13)),
                         uuidOrNull(row.getBytes(14)), row.getString(15), row.getBoolean(16), row.getString(17)), bytes(changeRequestId));
+    }
+
+    public long operationSetVersion(UUID changeRequestId) {
+        Long value = jdbc.queryForObject("SELECT operation_set_version FROM change_requests WHERE id=?", Long.class,
+                bytes(changeRequestId));
+        if (value == null) throw new IllegalArgumentException("Change request was not found.");
+        return value;
     }
 
     @Transactional

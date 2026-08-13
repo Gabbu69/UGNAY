@@ -54,6 +54,9 @@ ugnay:
     tokenizer-path: ${UGNAY_EMBEDDING_TOKENIZER_PATH:}
     tokenizer-sha256: ${UGNAY_EMBEDDING_TOKENIZER_SHA256:}
     algorithm-version: hybrid-v1.0.0
+  graph:
+    max-nodes: ${UGNAY_GRAPH_MAX_NODES:2000}
+    max-edges: ${UGNAY_GRAPH_MAX_EDGES:4000}
   storage:
     endpoint: ${UGNAY_STORAGE_ENDPOINT:http://localhost:9000}
     access-key: ${UGNAY_STORAGE_ACCESS_KEY:ugnay}

@@ -24,13 +24,14 @@ describe('analysis rules', () => {
 
   it('keeps missing health explicitly unassessed', () => {
     expect(healthLabel(null)).toBe('UNASSESSED')
-    expect(overallHealth([{ id: 'scope', label: 'Scope', score: null, delta: 0, detail: '' }])).toBeNull()
+    expect(overallHealth([{ id: 'scope', label: 'Scope', state: 'UNASSESSED', score: null, delta: 0, detail: '' }])).toBeNull()
+    expect(overallHealth([{ id: 'scope', label: 'Scope', state: 'UNASSESSED', score: 99, delta: 0, detail: '' }])).toBeNull()
   })
 
   it('uses the weakest assessed dimension as overall health', () => {
     expect(overallHealth([
-      { id: 'a', label: 'Alignment', score: 88, delta: 0, detail: '' },
-      { id: 'v', label: 'Verification', score: 58, delta: 0, detail: '' },
+      { id: 'a', label: 'Alignment', state: 'ASSESSED', score: 88, delta: 0, detail: '' },
+      { id: 'v', label: 'Verification', state: 'ASSESSED', score: 58, delta: 0, detail: '' },
     ])).toBe(58)
   })
 

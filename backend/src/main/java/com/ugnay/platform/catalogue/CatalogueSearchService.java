@@ -80,11 +80,11 @@ public class CatalogueSearchService {
     private static void addTextSearch(StringBuilder where, List<Object> parameters, String query) {
         if (query == null || query.isBlank()) return;
         String pattern = "%" + escapeLike(query.strip().toLowerCase(Locale.ROOT)) + "%";
-        where.append(" AND (LOWER(s.title) LIKE ? ESCAPE '\\\\'")
-                .append(" OR LOWER(COALESCE(s.abstract_text,'')) LIKE ? ESCAPE '\\\\'")
-                .append(" OR LOWER(COALESCE(s.problem_statement,'')) LIKE ? ESCAPE '\\\\'")
-                .append(" OR LOWER(COALESCE(s.methodology,'')) LIKE ? ESCAPE '\\\\'")
-                .append(" OR LOWER(COALESCE(s.keywords_text,'')) LIKE ? ESCAPE '\\\\') ");
+        where.append(" AND (LOWER(s.title) LIKE ? ESCAPE '!'")
+                .append(" OR LOWER(COALESCE(s.abstract_text,'')) LIKE ? ESCAPE '!'")
+                .append(" OR LOWER(COALESCE(s.problem_statement,'')) LIKE ? ESCAPE '!'")
+                .append(" OR LOWER(COALESCE(s.methodology,'')) LIKE ? ESCAPE '!'")
+                .append(" OR LOWER(COALESCE(s.keywords_text,'')) LIKE ? ESCAPE '!') ");
         for (int index = 0; index < 5; index++) parameters.add(pattern);
     }
 
@@ -123,7 +123,10 @@ public class CatalogueSearchService {
     }
 
     private static String escapeLike(String value) {
-        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+        return value.replace("!", "!!")
+                .replace("\\", "!\\")
+                .replace("%", "!%")
+                .replace("_", "!_");
     }
 
     private static String normalize(String value) {

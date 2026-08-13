@@ -76,7 +76,8 @@ public class SecurityConfig {
                             "/api/v1/projects/*/trace-items/*/revisions", "/api/v1/projects/*/trace-links",
                             "/api/v1/projects/*/test-executions", "/api/v1/projects/*/completion-package/evidence")
                             .hasAnyRole("STUDENT", "ADVISER", "COORDINATOR");
-                    authorize.requestMatchers(HttpMethod.POST, "/api/v1/problems", "/api/v1/proposals", "/api/v1/discovery-runs")
+                    authorize.requestMatchers(HttpMethod.POST, "/api/v1/problems", "/api/v1/proposals", "/api/v1/discovery-runs",
+                            "/api/v1/intakes")
                             .hasAnyRole("STUDENT", "ADVISER", "COORDINATOR");
                     authorize.requestMatchers(HttpMethod.POST, "/api/v1/change-requests", "/api/v1/change-requests/*/preview-impact")
                             .hasAnyRole("STUDENT", "ADVISER", "COORDINATOR");
@@ -100,8 +101,8 @@ public class SecurityConfig {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(Arrays.stream(origins.split(",")).map(String::trim).filter(value -> !value.isBlank()).toList());
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("Content-Type", "X-XSRF-TOKEN", "If-Match", "Accept"));
-        configuration.setExposedHeaders(List.of("ETag", "Location"));
+        configuration.setAllowedHeaders(List.of("Content-Type", "X-XSRF-TOKEN", "If-Match", "Idempotency-Key", "Accept"));
+        configuration.setExposedHeaders(List.of("ETag", "Location", "X-Page", "X-Page-Size", "X-Total-Count", "X-Truncated"));
         configuration.setAllowCredentials(true);
         configuration.setMaxAge(3600L);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

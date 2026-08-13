@@ -153,6 +153,54 @@ class ResearchQueryControllerTest {
     }
 
     @Test
+    void preProjectProposalContextIsLimitedToItsCreatorAndSubmitter() throws Exception {
+        byte[] department = jdbc.queryForObject("SELECT id FROM departments WHERE code='CICS'", byte[].class);
+        UUID creatorId = UUID.randomUUID();
+        UUID submitterId = UUID.randomUUID();
+        UUID outsiderId = UUID.randomUUID();
+        String creatorEmail = "proposal-creator-" + creatorId + "@example.test";
+        String submitterEmail = "proposal-submitter-" + submitterId + "@example.test";
+        String outsiderEmail = "proposal-outsider-" + outsiderId + "@example.test";
+        insertAccount(creatorId, department, creatorEmail);
+        insertAccount(submitterId, department, submitterEmail);
+        insertAccount(outsiderId, department, outsiderEmail);
+
+        UUID problemId = UUID.randomUUID();
+        UUID proposalId = UUID.randomUUID();
+        Instant now = Instant.now();
+        jdbc.update("INSERT INTO problem_cases(id,department_id,created_by,title,problem_statement,stakeholder,affected_users,site_context,desired_outcome,constraints_text,privacy_classification,intake_status,row_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                bytes(problemId), department, bytes(creatorId), "Creator-scoped proposal context",
+                "A creator-owned problem statement awaiting a project.", "Research office", "Researchers",
+                "Campus", "Preserve exact pre-project authorization", null, "INTERNAL", "SUBMITTED", 0,
+                Timestamp.from(now), Timestamp.from(now));
+        jdbc.update("INSERT INTO proposals(id,problem_case_id,submitted_by,proposed_title,proposed_solution,methodology,technology_text,data_sources_text,intended_users_text,proposal_status,row_version,submitted_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                bytes(proposalId), bytes(problemId), bytes(submitterId), "Creator and submitter proposal",
+                "Persist exact access rules", "Design science", "Java", "Authorized records", "Researchers",
+                "SUBMITTED", 0, Timestamp.from(now), Timestamp.from(now));
+
+        String body = "{\"source\":\"FIND RELATED TO PROPOSAL \\\"" + proposalId
+                + "\\\" USING LEXICAL\"}";
+        mvc.perform(post("/api/v1/research-queries/execute").with(csrf())
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors
+                                .user(creatorEmail).roles("STUDENT"))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.valid").value(true))
+                .andExpect(jsonPath("$.interpretedAction.contextAuthorized").value(true));
+        mvc.perform(post("/api/v1/research-queries/execute").with(csrf())
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors
+                                .user(submitterEmail).roles("STUDENT"))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.valid").value(true))
+                .andExpect(jsonPath("$.interpretedAction.contextAuthorized").value(true));
+        mvc.perform(post("/api/v1/research-queries/execute").with(csrf())
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors
+                                .user(outsiderEmail).roles("STUDENT"))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.valid").value(false))
+                .andExpect(jsonPath("$.diagnostics[0].code").value("SEM_PROPOSAL_CONTEXT_UNAVAILABLE"));
+    }
+
+    @Test
     @WithMockUser(username = "admin@ugnay.local", roles = "STUDENT")
     void excludesCrossDepartmentInternalStudiesBeforeRankingAndCounting() throws Exception {
         UUID departmentId = UUID.randomUUID();
@@ -185,5 +233,12 @@ class ResearchQueryControllerTest {
 
     private static byte[] bytes(UUID id) {
         return ByteBuffer.allocate(16).putLong(id.getMostSignificantBits()).putLong(id.getLeastSignificantBits()).array();
+    }
+
+    private void insertAccount(UUID id, byte[] department, String email) {
+        jdbc.update("INSERT INTO user_accounts(id,department_id,email,display_name,account_status,row_version,created_at) "
+                        + "VALUES(?,?,?,?,?,?,?)",
+                bytes(id), department, email, "Proposal authorization test account", "ACTIVE", 0,
+                Timestamp.from(Instant.now()));
     }
 }

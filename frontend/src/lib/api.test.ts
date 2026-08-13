@@ -6,14 +6,24 @@ import {
   createTraceItem,
   createTraceLink,
   getDocumentImportJob,
+  getWorkspace,
+  getCompletionEvidenceReferences,
+  getDecisionContext,
+  getAuthorizedStudyDetail,
   getAuthSession,
+  getProjectReviewQueue,
   login,
   logout,
   recordAcademicDecision,
+  recordContinuationEvidence,
+  recordImprovementClaim,
   recordTestExecution,
+  requestReviewRevision,
   decideChangeRequest,
   rerunProjectAnalysis,
   runDiscovery,
+  submitIntakeForDiscovery,
+  submitReviewRevisionResponse,
   uploadStudyDocument,
   updateCompletionEvidence,
 } from './api'
@@ -33,13 +43,9 @@ describe('discovery fail-safe behavior', () => {
     vi.unstubAllGlobals()
   })
 
-  it('never fabricates an assessed route when the analysis service is unavailable', async () => {
+  it('surfaces analysis failure instead of fabricating a synthetic run or false zero', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
-    const result = await runDiscovery(input)
-    expect(result.status).toBe('PARTIAL')
-    expect(result.recommendation).toBe('REVIEW_REQUIRED')
-    expect(result.confidence).toBe(0)
-    expect(result.candidates).toEqual([])
+    await expect(runDiscovery(input)).rejects.toThrow('offline')
   })
 
   it('obtains and sends the same-origin CSRF token for discovery mutations', async () => {
@@ -60,6 +66,26 @@ describe('discovery fail-safe behavior', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/auth/csrf', expect.objectContaining({ credentials: 'include' }))
     const mutation = fetchMock.mock.calls[1]?.[1] as RequestInit
     expect(new Headers(mutation.headers).get('X-XSRF-TOKEN')).toBe('test-csrf')
+  })
+
+  it('submits intake atomically with a stable idempotency key and no invented fields', async () => {
+    const result = { idempotencyKey: 'intake-key-1', replayed: false, problem: { id: 'problem-1' }, proposal: { id: 'proposal-1' }, discovery: { id: 'run-1' } }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ authenticated: true, email: 'student@ugnay.edu', roles: ['STUDENT'] }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ headerName: 'X-XSRF-TOKEN', token: 'intake-csrf' }) })
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => result })
+    vi.stubGlobal('fetch', fetchMock)
+    await login({ email: 'student@ugnay.edu', password: 'safe-test-password' })
+    await expect(submitIntakeForDiscovery({
+      problem: { title: 'Observed delays', problemStatement: 'A sufficiently detailed observed condition affecting the partner workflow.', stakeholder: 'Partner', affectedUsers: 'Staff', siteContext: 'Campus office', desiredOutcome: 'Shorter verified processing time', privacyClassification: 'INTERNAL' },
+      proposal: { title: 'Workflow continuity study', objectives: ['Measure processing time'], proposedSolution: 'Evaluate a traceable workflow intervention' },
+    }, 'intake-key-1')).resolves.toEqual(result)
+
+    const mutation = fetchMock.mock.calls[2]?.[1] as RequestInit
+    const headers = new Headers(mutation.headers)
+    expect(headers.get('Idempotency-Key')).toBe('intake-key-1')
+    expect(headers.get('X-XSRF-TOKEN')).toBe('intake-csrf')
+    expect(String(mutation.body)).not.toMatch(/Not yet assessed|No constraints recorded|intentionally deferred/i)
   })
 })
 
@@ -82,6 +108,18 @@ describe('same-origin session API', () => {
       source: 'LIVE',
     })
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/auth/me', expect.objectContaining({ credentials: 'include' }))
+  })
+
+  it('does not select the first project when the server returns no selected project', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ project: null, projects: [{ id: 'project-1', code: 'P-1', title: 'First accessible project' }] }),
+    }))
+    const workspace = await getWorkspace()
+    expect(workspace.source).toBe('LIVE')
+    expect(workspace.data.project).toBeNull()
+    expect(workspace.data.projects).toHaveLength(1)
   })
 
   it('opens a session without a CSRF preflight, then uses a fresh CSRF token to log out', async () => {
@@ -163,31 +201,83 @@ describe('audited workflow mutations', () => {
     expect(headers.get('X-XSRF-TOKEN')).toBe('analysis-csrf')
   })
 
-  it('records the latest discovered proposal with a human rationale and predecessor', async () => {
+  it('loads decision evidence only through the explicitly paired proposal and run', async () => {
+    const exact = { proposal: { id: 'proposal-1' }, discovery: { id: 'run-7', proposalId: 'proposal-1' }, decision: null, adviserRecommendations: [] }
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => exact })
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(getDecisionContext('proposal-1', 'run-7')).resolves.toEqual(exact)
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/proposals/proposal-1/decision-context/run-7', expect.objectContaining({ credentials: 'include' }))
+  })
+
+  it('records only the explicitly selected proposal, run, and predecessor', async () => {
     const decision = { id: 'decision-1', disposition: 'APPROVE_IMPROVE', decidedAt: '2026-08-09T00:00:00Z' }
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ authenticated: true, email: 'coordinator@ugnay.edu', roles: ['COORDINATOR'] }) })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ id: 'proposal-1', submittedAt: '2026-08-08T00:00:00Z' }] })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ id: 'run-1', proposalId: 'proposal-1', createdAt: '2026-08-08T01:00:00Z' }] })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [] })
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ headerName: 'X-XSRF-TOKEN', token: 'decision-csrf' }) })
       .mockResolvedValueOnce({ ok: true, status: 201, json: async () => decision })
     vi.stubGlobal('fetch', fetchMock)
 
     await login({ email: 'coordinator@ugnay.edu', password: 'safe-test-password' })
     await expect(recordAcademicDecision({
+      proposalId: 'proposal-1',
+      discoveryRunId: 'run-1',
       disposition: 'APPROVE_IMPROVE',
       rationale: 'The proposal defines a measurable improvement over the preserved predecessor.',
       primaryPredecessorId: 'study-1',
     })).resolves.toEqual(decision)
 
-    const mutation = fetchMock.mock.calls[5]?.[1] as RequestInit
+    const mutation = fetchMock.mock.calls[2]?.[1] as RequestInit
     expect(JSON.parse(String(mutation.body))).toEqual({
       proposalId: 'proposal-1',
       discoveryRunId: 'run-1',
       disposition: 'APPROVE_IMPROVE',
       rationale: 'The proposal defines a measurable improvement over the preserved predecessor.',
       primaryPredecessorId: 'study-1',
+    })
+  })
+
+  it('loads authorized predecessor items and appends exact route evidence without invented IDs', async () => {
+    const study = {
+      id: 'study-1', institutionalCode: 'STUDY-1', title: 'Authorized predecessor', academicYear: '2025',
+      department: 'CIT', lifecycleStatus: 'INCOMPLETE', visibility: 'DEPARTMENT', abstractText: '',
+      problemStatement: '', objectives: [], keywords: [],
+      continuationItems: [{ id: 'item-1', studyId: 'study-1', type: 'UNFINISHED_WORK', title: 'Open verification', description: '', status: 'OPEN', claimed: false }],
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ authenticated: true, email: 'student@ugnay.edu', roles: ['STUDENT'] }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => study })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ headerName: 'X-XSRF-TOKEN', token: 'route-csrf' }) })
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ revisionNumber: 1 }) })
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ id: 'claim-1' }) })
+    vi.stubGlobal('fetch', fetchMock)
+    await login({ email: 'student@ugnay.edu', password: 'safe-test-password' })
+    await expect(getAuthorizedStudyDetail('study-1')).resolves.toEqual(study)
+
+    await recordContinuationEvidence('proposal-1', {
+      predecessorStudyId: 'study-1',
+      objectiveLinks: [{ proposalObjectiveId: 'objective-1', continuationItemId: 'item-1', rationale: 'The objective explicitly continues the open verification work.' }],
+      codeAccessConfirmed: true,
+      dataAccessConfirmed: false,
+      accessNotes: 'Repository access was verified; the required dataset remains unavailable.',
+    })
+    await recordImprovementClaim('proposal-1', {
+      predecessorStudyId: 'study-1', continuationItemId: 'item-1',
+      claim: 'Reduce the documented processing delay.', baselineMeasure: '14 minutes median',
+      targetMeasure: '8 minutes median', evaluationMethod: 'Compare medians over equal-size observation windows.',
+    })
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/v1/studies/study-1')
+    expect(JSON.parse(String((fetchMock.mock.calls[3]?.[1] as RequestInit).body))).toEqual({
+      predecessorStudyId: 'study-1',
+      objectiveLinks: [{ proposalObjectiveId: 'objective-1', continuationItemId: 'item-1', rationale: 'The objective explicitly continues the open verification work.' }],
+      codeAccessConfirmed: true,
+      dataAccessConfirmed: false,
+      accessNotes: 'Repository access was verified; the required dataset remains unavailable.',
+    })
+    expect(JSON.parse(String((fetchMock.mock.calls[4]?.[1] as RequestInit).body))).toEqual({
+      predecessorStudyId: 'study-1', continuationItemId: 'item-1',
+      claim: 'Reduce the documented processing delay.', baselineMeasure: '14 minutes median',
+      targetMeasure: '8 minutes median', evaluationMethod: 'Compare medians over equal-size observation windows.',
     })
   })
 
@@ -223,12 +313,11 @@ describe('audited workflow mutations', () => {
     })
     await approveProjectBaseline('project-1', 'The chain is complete, measurable, and ready for an immutable baseline.')
     await updateCompletionEvidence('project-1', {
-      codeDataRightsConfirmed: true,
       repositoryUrl: 'https://git.example.edu/ugnay/project-1',
       commitHash: '4f61ac2',
       setupInstructions: 'Follow the preserved deployment guide.',
       limitations: ['Pilot dataset only'], recommendations: ['Run a wider study'], unfinishedWork: ['Validate export load'],
-      criteria: [{ key: 'trace', completion: 1, explanation: 'Baseline history is preserved.' }],
+      evidenceReferences: [{ type: 'TEST_RUN', label: 'Release verification', location: 'reports/release-verification.xml' }],
     })
 
     const mutationCalls = [3, 5, 7, 9, 11]
@@ -244,6 +333,21 @@ describe('audited workflow mutations', () => {
     expect(fetchMock.mock.calls[7]?.[0]).toBe('/api/v1/projects/project-1/test-executions')
     expect(fetchMock.mock.calls[9]?.[0]).toBe('/api/v1/projects/project-1/baselines/approve')
     expect(fetchMock.mock.calls[11]?.[0]).toBe('/api/v1/projects/project-1/completion-package/evidence')
+    const completionPayload = JSON.parse(String((fetchMock.mock.calls[11]?.[1] as RequestInit).body))
+    expect(completionPayload).not.toHaveProperty('criteria')
+    expect(completionPayload).not.toHaveProperty('codeDataRightsConfirmed')
+    expect(completionPayload.evidenceReferences).toEqual([
+      { type: 'TEST_RUN', label: 'Release verification', location: 'reports/release-verification.xml' },
+    ])
+  })
+
+  it('loads persisted completion evidence through the project-scoped endpoint', async () => {
+    const references = [{ id: 'evidence-1', type: 'DOCUMENT', label: 'Defense protocol', verificationState: 'UNVERIFIED' }]
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => references })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getCompletionEvidenceReferences('project-1')).resolves.toEqual(references)
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/project-1/completion-package/evidence-references', expect.objectContaining({ credentials: 'include' }))
   })
 
   it('binds finding and controlled-change decisions to fresh ETags and CSRF', async () => {
@@ -275,5 +379,64 @@ describe('audited workflow mutations', () => {
     expect(fetchMock.mock.calls[3]?.[0]).toBe('/api/v1/projects/project-1/findings/finding-1/accept')
     expect(fetchMock.mock.calls[5]?.[0]).toBe('/api/v1/change-requests/change-1/operations')
     expect(fetchMock.mock.calls[7]?.[0]).toBe('/api/v1/change-requests/change-1/return-for-revision')
+  })
+
+  it('binds approval to the exact operation-set version', async () => {
+    const response = (body: unknown) => ({ ok: true, status: 200, json: async () => body })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ authenticated: true, email: 'coordinator@ugnay.edu', roles: ['COORDINATOR'] }))
+      .mockResolvedValueOnce(response({ id: 'project-1', rowVersion: 22 }))
+      .mockResolvedValueOnce(response({ headerName: 'X-XSRF-TOKEN', token: 'approval-csrf' }))
+      .mockResolvedValueOnce(response({ project: { rowVersion: 23 }, baseline: {} }))
+    vi.stubGlobal('fetch', fetchMock)
+    await login({ email: 'coordinator@ugnay.edu', password: 'safe-test-password' })
+    await decideChangeRequest('project-1', 'change-1', 'approve', 'The current operation set preserves the approved research boundary.', 7)
+    expect(JSON.parse(String((fetchMock.mock.calls[3]?.[1] as RequestInit).body))).toEqual({
+      rationale: 'The current operation set preserves the approved research boundary.',
+      operationSetVersion: 7,
+    })
+  })
+})
+
+describe('project review inbox API', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('loads only the canonical project-scoped review inbox', async () => {
+    const reviews = [{ id: 'review-1', projectId: 'project-1', history: [] }]
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => reviews })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getProjectReviewQueue('project-1')).resolves.toEqual(reviews)
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/project-1/reviews', expect.objectContaining({ credentials: 'include' }))
+  })
+
+  it('binds revision requests and responses to a fresh ETag and the authenticated CSRF session', async () => {
+    const response = (body: unknown, status = 200) => ({ ok: true, status, json: async () => body })
+    const reviewResult = { project: { id: 'project-1', rowVersion: 8 }, review: { id: 'review-1', history: [] } }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ authenticated: true, email: 'coordinator@ugnay.edu', roles: ['COORDINATOR'] }))
+      .mockResolvedValueOnce(response({ id: 'project-1', rowVersion: 7 }))
+      .mockResolvedValueOnce(response({ headerName: 'X-XSRF-TOKEN', token: 'review-csrf' }))
+      .mockResolvedValueOnce(response(reviewResult, 201))
+      .mockResolvedValueOnce(response({ id: 'project-1', rowVersion: 8 }))
+      .mockResolvedValueOnce(response({ ...reviewResult, project: { id: 'project-1', rowVersion: 9 } }, 201))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await login({ email: 'coordinator@ugnay.edu', password: 'safe-test-password' })
+    await requestReviewRevision('project-1', 'review-1', { message: 'Revise the missing acceptance evidence.', evidenceLocation: 'trace/REQ-04' })
+    await submitReviewRevisionResponse('project-1', 'review-1', { message: 'The requested acceptance evidence is now attached.' })
+
+    for (const [callIndex, version] of [[3, '"7"'], [5, '"8"']] as const) {
+      const request = fetchMock.mock.calls[callIndex]?.[1] as RequestInit
+      expect(new Headers(request.headers).get('If-Match')).toBe(version)
+      expect(new Headers(request.headers).get('X-XSRF-TOKEN')).toBe('review-csrf')
+    }
+    expect(fetchMock.mock.calls[3]?.[0]).toBe('/api/v1/projects/project-1/reviews/review-1/revision-requests')
+    expect(fetchMock.mock.calls[5]?.[0]).toBe('/api/v1/projects/project-1/reviews/review-1/revision-responses')
+    expect(JSON.parse(String((fetchMock.mock.calls[3]?.[1] as RequestInit).body))).toEqual({ message: 'Revise the missing acceptance evidence.', evidenceLocation: 'trace/REQ-04' })
+    expect(JSON.parse(String((fetchMock.mock.calls[5]?.[1] as RequestInit).body))).toEqual({ message: 'The requested acceptance evidence is now attached.' })
   })
 })

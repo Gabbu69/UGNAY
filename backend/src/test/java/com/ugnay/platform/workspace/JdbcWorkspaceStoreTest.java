@@ -84,7 +84,7 @@ class JdbcWorkspaceStoreTest {
                 List.of(new CandidateEvidence("problem", "evidence gap", "flood gaps",
                         List.of(new ComponentScore("semantic", 84, .5, 42, "Related meaning", List.of("flood", "baha"))))));
         DiscoveryRun discovery = new DiscoveryRun(discoveryId, proposalId, AssessmentStatus.ASSESSED, Recommendation.IMPROVE,
-                91, "hybrid-test-v1", "a".repeat(64), "local-e5", "Completed predecessor has a measurable limitation.",
+                AssessmentStatus.ASSESSED, 91.0, "hybrid-test-v1", "a".repeat(64), "local-e5", "Completed predecessor has a measurable limitation.",
                 List.of("Confirm data access"), List.of(candidate), now);
         store.saveDiscovery(discovery);
         store.saveDecision(new ProposalDecision(UUID.randomUUID(), proposalId, discoveryId, DecisionDisposition.APPROVE_IMPROVE,
@@ -117,10 +117,13 @@ class JdbcWorkspaceStoreTest {
         store.saveChange(change);
         ImpactedArtifact impacted = new ImpactedArtifact(test.id(), test.key(), test.type(), test.title(), 1,
                 List.of(requirement.id(), test.id()), Severity.HIGH, true, "Requirement revision invalidates evidence.");
-        store.saveImpact(new ImpactPreview(change.id(), baselineId, true, risk, List.of(impacted), List.of("Test protocol"), now));
+        store.saveImpact(new ImpactPreview(change.id(), baselineId, true, risk, List.of(impacted), List.of("Test protocol"), now, 0,
+                "0".repeat(64)));
 
-        CompletionPackage completion = new CompletionPackage(UUID.randomUUID(), projectId, "READY", 100, true,
-                List.of(new ContinuityCriterion("trace", "Trace history", 20, 1, "Baseline preserved")), List.of(),
+        CompletionPackage completion = new CompletionPackage(UUID.randomUUID(), projectId, "READY",
+                AssessmentStatus.ASSESSED, 100.0, true,
+                List.of(new ContinuityCriterion("trace", "Trace history", 20, AssessmentStatus.ASSESSED, 1.0,
+                        "PERSISTED_BASELINE", now, "Baseline preserved")), List.of(),
                 "https://example.edu/repository", "abc123", "Run with Docker Compose", List.of("Pilot site only"),
                 List.of("Validate another site"), List.of("Second-semester evaluation"));
         store.saveCompletion(completion);
@@ -148,7 +151,11 @@ class JdbcWorkspaceStoreTest {
         });
         assertThat(loaded.proposalProblemIds()).containsEntry(proposalId, problemId);
         assertThat(loaded.discoveryRuns()).filteredOn(run -> run.id().equals(discoveryId)).singleElement()
-                .satisfies(run -> assertThat(run.candidates().getFirst().evidence().getFirst().components()).hasSize(1));
+                .satisfies(run -> {
+                    assertThat(run.candidates().getFirst().evidence().getFirst().components()).hasSize(1);
+                    assertThat(run.confidenceState()).isEqualTo(AssessmentStatus.ASSESSED);
+                    assertThat(run.confidence()).isEqualTo(91.0);
+                });
         assertThat(loaded.projectProposalIds()).containsEntry(projectId, proposalId);
         assertThat(loaded.traceability()).filteredOn(saved -> saved.projectId().equals(projectId)).singleElement()
                 .satisfies(saved -> {
@@ -162,5 +169,40 @@ class JdbcWorkspaceStoreTest {
         assertThat(loaded.lineages()).containsKey(projectId);
         assertThat(loaded.health()).containsKey(projectId);
         assertThat(loaded.reviewQueue()).extracting(ReviewQueueItem::id).contains(review.id());
+    }
+
+    @Test
+    void persistsUnassessedDiscoveryConfidenceAsNull() {
+        Instant now = Instant.now();
+        UUID problemId = UUID.randomUUID();
+        ProblemCase problem = new ProblemCase(problemId, "No eligible catalogue candidate",
+                "The submitted context has no eligible evidence candidate.", "Research coordinator",
+                "Student researchers", "CICS", "Keep missing confidence honest", "Authorized evidence only",
+                "INTERNAL", "OPEN", 0, now, 0);
+        store.saveProblem(problem);
+        UUID proposalId = UUID.randomUUID();
+        Proposal proposal = new Proposal(proposalId, problem.title(), problem.problemStatement(), problem.stakeholder(),
+                problem.affectedUsers(), problem.siteContext(), problem.desiredOutcome(), problem.constraints(),
+                problem.privacyClassification(), List.of("Assess only eligible evidence"), "Inspect the authorized catalogue",
+                "Design science", "Institutional records", "Java and MySQL", "Student researchers", "SUBMITTED", now, 0);
+        store.saveProposal(proposal, problemId);
+        DiscoveryRun run = new DiscoveryRun(UUID.randomUUID(), proposalId, AssessmentStatus.PARTIAL,
+                Recommendation.REVIEW_REQUIRED, AssessmentStatus.UNASSESSED, null, "hybrid-test-v1",
+                "b".repeat(64), "unavailable", "No eligible candidate produced a confidence measurement.",
+                List.of("Review the evidence scope."), List.of(), now);
+
+        store.saveDiscovery(run);
+
+        assertThat(jdbc.queryForObject("SELECT confidence_score FROM discovery_runs WHERE id=?", Double.class,
+                bytes(run.id()))).isNull();
+        assertThat(store.discoveryRuns()).filteredOn(value -> value.id().equals(run.id())).singleElement()
+                .satisfies(saved -> {
+                    assertThat(saved.confidenceState()).isEqualTo(AssessmentStatus.UNASSESSED);
+                    assertThat(saved.confidence()).isNull();
+                });
+    }
+
+    private static byte[] bytes(UUID id) {
+        return java.nio.ByteBuffer.allocate(16).putLong(id.getMostSignificantBits()).putLong(id.getLeastSignificantBits()).array();
     }
 }

@@ -2,6 +2,7 @@ package com.ugnay.platform.catalogue;
 
 import com.ugnay.platform.catalogue.DocumentIngestionRepository.PendingDocument;
 import com.ugnay.platform.shared.JdbcAuditService;
+import com.ugnay.platform.shared.HeavyOperationCoordinator;
 import org.apache.tika.Tika;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -39,6 +40,7 @@ public final class DocumentIngestionService {
     private final DocumentJobEventStream events;
     private final JdbcAuditService audit;
     private final DocumentExtractionExecutor executor;
+    private final HeavyOperationCoordinator heavyOperations;
     private final long maxFileBytes;
     private final int maxCharacters;
     private final int timeoutSeconds;
@@ -46,7 +48,7 @@ public final class DocumentIngestionService {
 
     public DocumentIngestionService(DocumentIngestionRepository repository, DocumentObjectStorage storage,
             MalwareScanner scanner, PdfTextExtractor extractor, DocumentJobEventStream events, JdbcAuditService audit,
-            DocumentExtractionExecutor executor,
+            DocumentExtractionExecutor executor, HeavyOperationCoordinator heavyOperations,
             @Value("${ugnay.ingestion.max-file-bytes:26214400}") long maxFileBytes,
             @Value("${ugnay.tika.max-characters:2000000}") int maxCharacters,
             @Value("${ugnay.tika.timeout-seconds:30}") int timeoutSeconds) {
@@ -57,6 +59,7 @@ public final class DocumentIngestionService {
         this.events = events;
         this.audit = audit;
         this.executor = executor;
+        this.heavyOperations = heavyOperations;
         this.maxFileBytes = Math.max(1, maxFileBytes);
         this.maxCharacters = Math.max(1_000, maxCharacters);
         this.timeoutSeconds = Math.max(1, timeoutSeconds);
@@ -167,28 +170,32 @@ public final class DocumentIngestionService {
     }
 
     private void extract(UUID jobId) {
-        if (!repository.claim(jobId)) return;
-        DocumentImportJob running = repository.find(jobId);
-        events.publish(running);
-        DocumentImportJob finished;
-        try (InputStream source = storage.open(running.objectKey())) {
-            PdfTextExtractor.ExtractionOutcome outcome = extractor.extract(source, running.originalFilename(),
-                    running.maxCharacterCount(), running.timeoutSeconds());
-            finished = repository.finish(jobId, normalize(outcome));
-        } catch (Exception exception) {
-            DocumentImportJob failed = repository.fail(jobId, "Stored PDF extraction failed: " + safeMessage(exception));
-            events.publish(failed);
-            audit.append(failed.uploaderEmail(), "DOCUMENT_EXTRACTION_FAILED", "DOCUMENT_VERSION", failed.documentVersionId(),
-                    "Asynchronous PDF extraction failed and requires curator review.",
-                    Map.of("jobId", jobId.toString(), "reason", safeMessage(exception)));
-            return;
+        var lease = heavyOperations.acquire("PDF_EXTRACTION");
+        if (lease.isEmpty()) return;
+        try (var ignored = lease.orElseThrow()) {
+            if (!repository.claim(jobId)) return;
+            DocumentImportJob running = repository.find(jobId);
+            events.publish(running);
+            DocumentImportJob finished;
+            try (InputStream source = storage.open(running.objectKey())) {
+                PdfTextExtractor.ExtractionOutcome outcome = extractor.extract(source, running.originalFilename(),
+                        running.maxCharacterCount(), running.timeoutSeconds());
+                finished = repository.finish(jobId, normalize(outcome));
+            } catch (Exception exception) {
+                DocumentImportJob failed = repository.fail(jobId, "Stored PDF extraction failed: " + safeMessage(exception));
+                events.publish(failed);
+                audit.append(failed.uploaderEmail(), "DOCUMENT_EXTRACTION_FAILED", "DOCUMENT_VERSION", failed.documentVersionId(),
+                        "Asynchronous PDF extraction failed and requires curator review.",
+                        Map.of("jobId", jobId.toString(), "reason", safeMessage(exception)));
+                return;
+            }
+            events.publish(finished);
+            audit.append(finished.uploaderEmail(), "DOCUMENT_EXTRACTION_FINISHED", "DOCUMENT_VERSION", finished.documentVersionId(),
+                    "Finished asynchronous PDF extraction without publishing a catalogue study.",
+                    Map.of("jobId", jobId.toString(), "status", finished.status(),
+                            "characters", finished.extractedCharacterCount(), "pages", finished.pageCount(),
+                            "publicationEligible", finished.publicationEligible()));
         }
-        events.publish(finished);
-        audit.append(finished.uploaderEmail(), "DOCUMENT_EXTRACTION_FINISHED", "DOCUMENT_VERSION", finished.documentVersionId(),
-                "Finished asynchronous PDF extraction without publishing a catalogue study.",
-                Map.of("jobId", jobId.toString(), "status", finished.status(),
-                        "characters", finished.extractedCharacterCount(), "pages", finished.pageCount(),
-                        "publicationEligible", finished.publicationEligible()));
     }
 
     private void dispatchBacklog() {

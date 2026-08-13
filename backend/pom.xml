@@ -25,6 +25,7 @@
         <onnxruntime.version>1.28.0</onnxruntime.version>
         <djl.version>0.36.0</djl.version>
         <bouncycastle.version>1.85.2</bouncycastle.version>
+        <project.build.outputTimestamp>2026-08-09T00:00:00Z</project.build.outputTimestamp>
     </properties>
 
     <dependencies>

@@ -1,5 +1,6 @@
 package com.ugnay.platform.discovery;
 
+import com.ugnay.platform.shared.HeavyOperationCoordinator;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
@@ -17,7 +18,7 @@ class ConfiguredEmbeddingProviderInt8Test {
         String tokenizer = System.getProperty("ugnay.test.tokenizer", "");
         Assumptions.assumeTrue(!model.isBlank() && !tokenizer.isBlank(), "Release asset paths were not supplied.");
         try (var provider = new AutoClosingProvider(new ConfiguredEmbeddingProvider(model, sha(Path.of(model)),
-                tokenizer, sha(Path.of(tokenizer)), 0, 30))) {
+                tokenizer, sha(Path.of(tokenizer)), 0, 30, new HeavyOperationCoordinator(1)))) {
             double[] vector = provider.delegate.embed("query: flood response continuity").orElseThrow();
             assertThat(vector).hasSize(384);
             double magnitude = Math.sqrt(java.util.Arrays.stream(vector).map(value -> value * value).sum());

@@ -1,5 +1,6 @@
 package com.ugnay.platform.discovery;
 
+import com.ugnay.platform.shared.HeavyOperationCoordinator;
 import ai.djl.huggingface.tokenizers.Encoding;
 import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer;
 import ai.onnxruntime.OnnxTensor;
@@ -40,6 +41,7 @@ public final class ConfiguredEmbeddingProvider implements EmbeddingProvider {
     private final long minimumFreeMemoryBytes;
     private final long idleUnloadNanos;
     private final ScheduledExecutorService unloadScheduler;
+    private final HeavyOperationCoordinator heavyOperations;
     private OrtSession session;
     private HuggingFaceTokenizer tokenizer;
     private volatile String reason;
@@ -54,7 +56,8 @@ public final class ConfiguredEmbeddingProvider implements EmbeddingProvider {
             @Value("${ugnay.discovery.tokenizer-path:}") String configuredTokenizerPath,
             @Value("${ugnay.discovery.tokenizer-sha256:}") String expectedTokenizerSha256,
             @Value("${ugnay.discovery.minimum-free-memory-bytes:0}") long minimumFreeMemoryBytes,
-            @Value("${ugnay.discovery.idle-unload-seconds:120}") int idleUnloadSeconds) {
+            @Value("${ugnay.discovery.idle-unload-seconds:120}") int idleUnloadSeconds,
+            HeavyOperationCoordinator heavyOperations) {
         this.environment = OrtEnvironment.getEnvironment("ugnay-local-semantic");
         String modelValue = trim(configuredPath);
         this.model = modelValue.isBlank() ? null : Path.of(modelValue).toAbsolutePath();
@@ -64,6 +67,7 @@ public final class ConfiguredEmbeddingProvider implements EmbeddingProvider {
         this.expectedTokenizerSha256 = trim(expectedTokenizerSha256);
         this.minimumFreeMemoryBytes = Math.max(0, minimumFreeMemoryBytes);
         this.idleUnloadNanos = TimeUnit.SECONDS.toNanos(Math.max(30, idleUnloadSeconds));
+        this.heavyOperations = heavyOperations;
         this.unloadScheduler = Executors.newSingleThreadScheduledExecutor(task -> {
             Thread thread = new Thread(task, "ugnay-semantic-idle-unloader");
             thread.setDaemon(true);
@@ -74,8 +78,14 @@ public final class ConfiguredEmbeddingProvider implements EmbeddingProvider {
 
     @Override
     public synchronized Optional<double[]> embed(String text) {
-        if (text == null || text.isBlank() || !ensureInitialized()) return Optional.empty();
-        try {
+        if (text == null || text.isBlank()) return Optional.empty();
+        var lease = heavyOperations.tryAcquire("ONNX_INFERENCE");
+        if (lease.isEmpty()) {
+            reason = "Another local evidence operation is using the constrained-memory lane; semantic contribution is temporarily unavailable.";
+            return Optional.empty();
+        }
+        try (var ignored = lease.orElseThrow()) {
+            if (!ensureInitialized()) return Optional.empty();
             lastUseNanos = System.nanoTime();
             Encoding encoding = tokenizer.encode(text);
             long[] ids = encoding.getIds();

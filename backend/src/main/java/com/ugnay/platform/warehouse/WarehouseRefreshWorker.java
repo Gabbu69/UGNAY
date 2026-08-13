@@ -1,5 +1,6 @@
 package com.ugnay.platform.warehouse;
 
+import com.ugnay.platform.shared.HeavyOperationCoordinator;
 import com.ugnay.platform.warehouse.WarehouseContracts.LoadView;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
@@ -20,13 +21,16 @@ class WarehouseRefreshWorker {
     private static final Logger LOGGER = LoggerFactory.getLogger(WarehouseRefreshWorker.class);
     private final WarehouseRefreshQueueRepository queue;
     private final WarehouseService warehouse;
+    private final HeavyOperationCoordinator heavyOperations;
     private final ExecutorService executor = Executors.newSingleThreadExecutor(
             Thread.ofPlatform().name("ugnay-warehouse-refresh").daemon(true).factory());
     private final AtomicBoolean scheduled = new AtomicBoolean();
 
-    WarehouseRefreshWorker(WarehouseRefreshQueueRepository queue, WarehouseService warehouse) {
+    WarehouseRefreshWorker(WarehouseRefreshQueueRepository queue, WarehouseService warehouse,
+            HeavyOperationCoordinator heavyOperations) {
         this.queue = queue;
         this.warehouse = warehouse;
+        this.heavyOperations = heavyOperations;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -48,11 +52,14 @@ class WarehouseRefreshWorker {
     private void drain() {
         try {
             while (!Thread.currentThread().isInterrupted()) {
-                var claimed = queue.claimNext();
-                if (claimed.isEmpty()) return;
-                var request = claimed.orElseThrow();
+                var lease = heavyOperations.acquire("WAREHOUSE_REFRESH");
+                if (lease.isEmpty()) return;
+                WarehouseRefreshQueueRepository.ClaimedRefresh request = null;
                 LoadView load = null;
-                try {
+                try (var ignored = lease.orElseThrow()) {
+                    var claimed = queue.claimNext();
+                    if (claimed.isEmpty()) return;
+                    request = claimed.orElseThrow();
                     load = warehouse.refreshQueued(request.actorEmail(), request.trigger());
                     UUID loadId = load.id();
                     if (loadId != null && ("PUBLISHED".equals(load.status()) || "UNCHANGED".equals(load.status()))) {
@@ -61,9 +68,13 @@ class WarehouseRefreshWorker {
                         queue.fail(request.id(), loadId, load.failureReason());
                     }
                 } catch (RuntimeException exception) {
-                    LOGGER.warn("Durable warehouse refresh request {} failed safely.", request.id(), exception);
-                    queue.fail(request.id(), load == null ? null : load.id(),
-                            "Warehouse refresh request failed safely: " + exception.getClass().getSimpleName() + ".");
+                    if (request == null) {
+                        LOGGER.warn("Warehouse refresh worker failed before it claimed a durable request.", exception);
+                    } else {
+                        LOGGER.warn("Durable warehouse refresh request {} failed safely.", request.id(), exception);
+                        queue.fail(request.id(), load == null ? null : load.id(),
+                                "Warehouse refresh request failed safely: " + exception.getClass().getSimpleName() + ".");
+                    }
                 }
             }
         } finally {

@@ -11,7 +11,7 @@ public final class PlatformModels {
     public enum Recommendation { NEW, IMPROVE, CONTINUE, POSSIBLE_DUPLICATE, REVIEW_REQUIRED }
     public enum DecisionDisposition { APPROVE_NEW, APPROVE_IMPROVE, APPROVE_CONTINUE, RETURN_FOR_REVISION, CLOSE_AS_DUPLICATE }
     public enum TraceItemType { PROBLEM, OBJECTIVE, REQUIREMENT, FEATURE, TEST_CASE, OUTPUT }
-    public enum AssessmentStatus { ASSESSED, UNASSESSED, STALE, PARTIAL }
+    public enum AssessmentStatus { ASSESSED, UNASSESSED, UNAVAILABLE, STALE, PARTIAL }
     public enum FindingState { OPEN, ACCEPTED, RESOLVED, REOPENED }
     public enum LineageType { CONTINUES, IMPROVES, ADAPTS, REPLICATES, REFERENCES }
     public enum Severity { INFO, LOW, MODERATE, HIGH, CRITICAL }
@@ -118,7 +118,8 @@ public final class PlatformModels {
             UUID proposalId,
             AssessmentStatus assessmentStatus,
             Recommendation recommendation,
-            double confidence,
+            AssessmentStatus confidenceState,
+            Double confidence,
             String algorithmVersion,
             String inputHash,
             String semanticProvider,
@@ -226,10 +227,10 @@ public final class PlatformModels {
             AssessmentStatus status,
             Integer score,
             String band,
-            int governance,
-            int alignment,
-            int controlledGrowth,
-            int boundary,
+            Integer governance,
+            Integer alignment,
+            Integer controlledGrowth,
+            Integer boundary,
             List<String> explanations) {}
 
     public record ChangeRequest(
@@ -281,18 +282,29 @@ public final class PlatformModels {
             ScopeRisk scopeRisk,
             List<ImpactedArtifact> impactedArtifacts,
             List<String> documentsToRevise,
-            Instant calculatedAt) {}
+            Instant calculatedAt,
+            long operationSetVersion,
+            String operationSetSha256) {}
 
     public record LineageNode(UUID id, String kind, String title, String status, String year, boolean current) {}
     public record LineageEdge(UUID id, UUID sourceId, UUID targetId, LineageType type, boolean primary, String rationale) {}
     public record Lineage(UUID projectId, List<LineageNode> nodes, List<LineageEdge> edges) {}
 
-    public record ContinuityCriterion(String key, String label, int weight, double completion, String explanation) {}
+    public record ContinuityCriterion(
+            String key,
+            String label,
+            int weight,
+            AssessmentStatus state,
+            Double value,
+            String source,
+            Instant assessedAt,
+            String explanation) {}
     public record CompletionPackage(
             UUID id,
             UUID projectId,
             String status,
-            double readinessScore,
+            AssessmentStatus readinessState,
+            Double readinessScore,
             boolean codeDataRightsConfirmed,
             List<ContinuityCriterion> criteria,
             List<String> blockers,

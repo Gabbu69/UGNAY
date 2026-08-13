@@ -20,6 +20,7 @@ import com.ugnay.platform.identity.JdbcIdentityService;
 import com.ugnay.platform.identity.ProjectAccessService;
 import com.ugnay.platform.identity.StudyVisibilityPolicy;
 import org.springframework.security.core.Authentication;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -28,27 +29,37 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Component
 public final class UiWorkspaceMapper {
+    private static final int WORKSPACE_PROJECT_LIMIT = 50;
+    private static final int WORKSPACE_STUDY_LIMIT = 100;
+    private static final int WORKSPACE_REVIEW_LIMIT = 50;
     private final WorkspaceService workspace;
     private final JdbcIdentityService identities;
     private final CatalogueMetadataRepository catalogueMetadata;
     private final WorkflowActionService workflowActions;
     private final ProjectAccessService projectAccess;
     private final StudyVisibilityPolicy studyVisibility;
+    private final int maxGraphNodes;
+    private final int maxGraphEdges;
 
     public UiWorkspaceMapper(WorkspaceService workspace, JdbcIdentityService identities,
                              CatalogueMetadataRepository catalogueMetadata, WorkflowActionService workflowActions,
-                             ProjectAccessService projectAccess, StudyVisibilityPolicy studyVisibility) {
+                             ProjectAccessService projectAccess, StudyVisibilityPolicy studyVisibility,
+                             @Value("${ugnay.graph.max-nodes:2000}") int maxGraphNodes,
+                             @Value("${ugnay.graph.max-edges:4000}") int maxGraphEdges) {
         this.workspace = workspace;
         this.identities = identities;
         this.catalogueMetadata = catalogueMetadata;
         this.workflowActions = workflowActions;
         this.projectAccess = projectAccess;
         this.studyVisibility = studyVisibility;
+        this.maxGraphNodes = Math.max(1, maxGraphNodes);
+        this.maxGraphEdges = Math.max(1, maxGraphEdges);
     }
 
     public UiContracts.WorkspaceView workspace(Authentication authentication) {
@@ -56,38 +67,71 @@ public final class UiWorkspaceMapper {
     }
 
     public UiContracts.WorkspaceView workspace(Authentication authentication, UUID selectedProjectId) {
-        List<Project> available = workspace.projects().stream().filter(value -> projectAccess.canAccess(authentication, value.id())).toList();
-        if (available.isEmpty()) {
-            var emptyProject = new UiContracts.ProjectSummary(new UUID(0, 0), "UNASSESSED", "No persisted project yet",
-                    "UNASSESSED", com.ugnay.platform.shared.PlatformModels.Recommendation.REVIEW_REQUIRED,
-                    currentUser(authentication).department(), "Unassigned", Instant.now(), 0, 0);
-            return new UiContracts.WorkspaceView(currentUser(authentication), emptyProject, List.of(), rankedStudies(Map.of()),
-                    List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), Instant.now());
+        boolean authenticated = authenticated(authentication);
+        List<Project> available = authenticated
+                ? workspace.projects().stream().filter(value -> projectAccess.canAccess(authentication, value.id())).toList()
+                : List.of();
+        List<Project> boundedProjects = available.stream().limit(WORKSPACE_PROJECT_LIMIT).collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        if (selectedProjectId != null && boundedProjects.stream().noneMatch(project -> project.id().equals(selectedProjectId))) {
+            available.stream().filter(project -> project.id().equals(selectedProjectId)).findFirst().ifPresent(project -> {
+                if (boundedProjects.size() == WORKSPACE_PROJECT_LIMIT) boundedProjects.removeLast();
+                boundedProjects.add(project);
+            });
         }
-        Project current = selectedProjectId == null ? available.getFirst() : workspace.project(selectedProjectId);
+        List<UiContracts.ProjectSummary> projects = boundedProjects.stream().map(this::project).toList();
+        if (available.isEmpty() || selectedProjectId == null) {
+            return new UiContracts.WorkspaceView(currentUser(authentication), null, projects, List.of(),
+                    List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), false, 0, 0, Instant.now());
+        }
+        Project current = available.stream()
+                .filter(project -> project.id().equals(selectedProjectId)).findFirst()
+                .orElseThrow(() -> new org.springframework.security.access.AccessDeniedException("The selected project is not available to this account."));
         Traceability trace = workspace.traceability(current.id());
         ProjectHealth projectHealth = workspace.health(current.id());
-        DiscoveryRun discovery = workspace.discoveries().stream().findFirst().orElse(null);
+        UUID proposalId = workspace.proposalIdForProject(current.id());
+        DiscoveryRun discovery = workspace.latestDiscoveryForProposal(proposalId).orElse(null);
         Map<UUID, DiscoveryCandidate> matches = discovery == null ? Map.of() : discovery.candidates().stream()
                 .collect(Collectors.toMap(DiscoveryCandidate::studyId, candidate -> candidate));
         UiContracts.CurrentUser currentUser = currentUser(authentication);
-        List<UiContracts.ProjectSummary> projects = available.stream().map(this::project).toList();
-        List<UiContracts.StudyView> studies = rankedStudies(matches);
+        List<UiContracts.StudyView> studies = rankedStudies(authentication, matches);
         Map<UUID, TraceItem> byId = trace.items().stream().collect(Collectors.toMap(TraceItem::id, item -> item));
-        List<UiContracts.TraceNode> nodes = trace.items().stream().map(item -> node(item, trace)).toList();
-        List<UiContracts.TraceEdge> edges = trace.links().stream().map(link -> edge(link, byId)).toList();
+        List<UiContracts.TraceNode> allNodes = trace.items().stream().map(item -> node(item, trace)).toList();
+        List<UiContracts.TraceNode> nodes = allNodes.stream().limit(maxGraphNodes).toList();
+        Set<UUID> visibleNodeIds = nodes.stream().map(UiContracts.TraceNode::id).collect(Collectors.toSet());
+        List<TraceLink> visibleLinks = trace.links().stream()
+                .filter(link -> visibleNodeIds.contains(link.sourceId()) && visibleNodeIds.contains(link.targetId())).toList();
+        List<UiContracts.TraceEdge> edges = visibleLinks.stream().limit(maxGraphEdges).map(link -> edge(link, byId)).toList();
         List<UiContracts.FindingView> findings = trace.findings().stream().map(finding -> finding(
                 new Finding(finding.id(), finding.code(), finding.severity(), workflowActions.effectiveFindingState(current.id(), finding),
                         finding.title(), finding.explanation(), finding.nextAction(), finding.implicatedItemIds(), finding.ruleVersion()), byId)).toList();
         List<UiContracts.HealthView> health = projectHealth.dimensions().stream().map(this::health).toList();
-        List<UiContracts.ReviewView> review = workspace.reviewQueue().stream().map(this::review).toList();
+        List<UiContracts.ReviewView> review = workspace.reviewQueue().stream()
+                .filter(item -> current.code().equals(item.projectCode())).limit(WORKSPACE_REVIEW_LIMIT).map(this::review).toList();
         List<UiContracts.LineageView> lineage = lineage(workspace.lineage(current.id()));
         return new UiContracts.WorkspaceView(currentUser, project(current), projects, studies, nodes, edges,
-                findings, health, review, lineage, Instant.now());
+                findings, health, review, lineage,
+                allNodes.size() > nodes.size() || visibleLinks.size() > edges.size(), allNodes.size(), trace.links().size(), Instant.now());
+    }
+
+    public UiContracts.TraceGraphPage traceGraph(UUID projectId, int requestedPage, int requestedSize) {
+        Traceability trace = workspace.traceability(projectId);
+        int page = Math.max(0, requestedPage);
+        int size = Math.max(1, Math.min(requestedSize, maxGraphNodes));
+        int from = (int) Math.min(trace.items().size(), (long) page * size);
+        int to = Math.min(trace.items().size(), from + size);
+        List<TraceItem> pageItems = trace.items().subList(from, to);
+        Set<UUID> ids = pageItems.stream().map(TraceItem::id).collect(Collectors.toSet());
+        Map<UUID, TraceItem> byId = trace.items().stream().collect(Collectors.toMap(TraceItem::id, item -> item));
+        List<TraceLink> relevant = trace.links().stream()
+                .filter(link -> ids.contains(link.sourceId()) && ids.contains(link.targetId())).toList();
+        List<UiContracts.TraceNode> nodes = pageItems.stream().map(item -> node(item, trace)).toList();
+        List<UiContracts.TraceEdge> edges = relevant.stream().limit(maxGraphEdges).map(link -> edge(link, byId)).toList();
+        boolean truncated = to < trace.items().size() || relevant.size() > edges.size();
+        return new UiContracts.TraceGraphPage(nodes, edges, page, size, trace.items().size(), trace.links().size(), truncated);
     }
 
     private UiContracts.CurrentUser currentUser(Authentication authentication) {
-        if (authentication != null && authentication.isAuthenticated()) {
+        if (authenticated(authentication)) {
             return identities.userByEmail(authentication.getName())
                     .map(user -> new UiContracts.CurrentUser(user.displayName(), initials(user.displayName()), user.roles(), user.department()))
                     .orElseGet(() -> new UiContracts.CurrentUser(authentication.getName(), initials(authentication.getName()),
@@ -96,49 +140,58 @@ public final class UiWorkspaceMapper {
                                     .map(authority -> authority.substring("ROLE_".length())).toList(),
                             "University workspace"));
         }
-        var demo = workspace.workspace().demoUser();
-        return new UiContracts.CurrentUser(demo.displayName(), initials(demo.displayName()), demo.roles(), demo.department());
+        return new UiContracts.CurrentUser("Not signed in", "", List.of(), "Unavailable");
     }
 
     public List<UiContracts.StudyView> studies() {
-        DiscoveryRun discovery = workspace.discoveries().stream().findFirst().orElse(null);
-        Map<UUID, DiscoveryCandidate> matches = discovery == null ? Map.of() : discovery.candidates().stream().collect(Collectors.toMap(DiscoveryCandidate::studyId, value -> value));
-        return rankedStudies(matches);
+        return List.of();
     }
 
     public List<UiContracts.StudyView> studies(Authentication authentication) {
-        DiscoveryRun discovery = workspace.discoveries().stream().findFirst().orElse(null);
-        Map<UUID, DiscoveryCandidate> matches = discovery == null ? Map.of() : discovery.candidates().stream()
-                .collect(Collectors.toMap(DiscoveryCandidate::studyId, value -> value));
         StudyVisibilityPolicy.Scope scope = studyVisibility.scope(authentication);
         return workspace.studies().stream()
                 .filter(value -> studyVisibility.canView(scope, value.visibility(), value.department()))
-                .sorted(Comparator.comparingInt(value -> matches.containsKey(value.id())
-                        ? matches.get(value.id()).rank() : Integer.MAX_VALUE))
-                .map(value -> study(value, matches.get(value.id()), !scope.curator()))
+                .sorted(Comparator.comparing(Study::title, String.CASE_INSENSITIVE_ORDER))
+                .map(value -> study(value, null, !scope.curator()))
                 .toList();
     }
 
     CatalogueMetadataRepository catalogueMetadata() { return catalogueMetadata; }
 
-    private List<UiContracts.StudyView> rankedStudies(Map<UUID, DiscoveryCandidate> matches) {
+    private List<UiContracts.StudyView> rankedStudies(Authentication authentication, Map<UUID, DiscoveryCandidate> matches) {
+        if (matches.isEmpty()) return List.of();
+        StudyVisibilityPolicy.Scope scope = studyVisibility.scope(authentication);
         return workspace.studies().stream()
+                .filter(value -> matches.containsKey(value.id()))
+                .filter(value -> studyVisibility.canView(scope, value.visibility(), value.department()))
                 .sorted(Comparator.comparingInt(value -> matches.containsKey(value.id()) ? matches.get(value.id()).rank() : Integer.MAX_VALUE))
-                .map(value -> study(value, matches.get(value.id())))
+                .limit(WORKSPACE_STUDY_LIMIT)
+                .map(value -> study(value, matches.get(value.id()), !scope.curator()))
                 .toList();
     }
 
     public UiContracts.DiscoveryView discovery(DiscoveryRun run) {
         List<UiContracts.StudyView> candidates = run.candidates().stream().map(candidate ->
                 study(workspace.study(candidate.studyId()), candidate)).toList();
-        return new UiContracts.DiscoveryView(run.id(), run.assessmentStatus(), run.recommendation(), run.confidence(), candidates, run.algorithmVersion());
+        return new UiContracts.DiscoveryView(run.id(), run.assessmentStatus(), run.recommendation(),
+                run.confidenceState(), run.confidence(), candidates, run.algorithmVersion());
+    }
+
+    public UiContracts.DiscoveryView discovery(DiscoveryRun run, Authentication authentication) {
+        List<UiContracts.StudyView> candidates = run.candidates().stream().filter(candidate -> {
+            Study study = workspace.study(candidate.studyId());
+            return studyVisibility.canView(authentication, study.visibility(), study.department());
+        }).map(candidate -> study(workspace.study(candidate.studyId()), candidate,
+                !studyVisibility.scope(authentication).curator())).toList();
+        return new UiContracts.DiscoveryView(run.id(), run.assessmentStatus(), run.recommendation(),
+                run.confidenceState(), run.confidence(), candidates, run.algorithmVersion());
     }
 
     private UiContracts.ProjectSummary project(Project project) {
         ProjectHealth projectHealth = workspace.health(project.id());
         int open = projectHealth.openFindings();
-        double score = projectHealth.dimensions().stream().filter(dimension -> dimension.score() != null)
-                .mapToDouble(HealthDimension::score).min().orElse(0);
+        Double score = projectHealth.dimensions().stream().map(HealthDimension::score)
+                .filter(java.util.Objects::nonNull).min(Double::compareTo).orElse(null);
         String adviser = project.team().isEmpty() ? "Unassigned" : project.team().getLast();
         return new UiContracts.ProjectSummary(project.id(), project.code(), project.title(), project.status().name(), project.route(),
                 project.department(), adviser, project.updatedAt(), open, score);
@@ -151,10 +204,10 @@ public final class UiWorkspaceMapper {
     private UiContracts.StudyView study(Study study, DiscoveryCandidate candidate, boolean protectRestricted) {
         boolean restricted = protectRestricted
                 && ("RESTRICTED".equals(study.visibility()) || "EMBARGOED".equals(study.visibility()));
-        double problem = candidate == null ? 0 : candidate.problemScore();
-        double solution = candidate == null ? 0 : candidate.solutionScore();
-        double objective = candidate == null ? 0 : candidate.objectiveScore();
-        double confidence = candidate == null ? 0 : candidate.confidence();
+        Double problem = candidate == null ? null : candidate.problemScore();
+        Double solution = candidate == null ? null : candidate.solutionScore();
+        Double objective = candidate == null ? null : candidate.objectiveScore();
+        Double confidence = candidate == null ? null : candidate.confidence();
         String reason = candidate == null || candidate.evidence().isEmpty()
                 ? "No comparable evidence was available in the current discovery run."
                 : "Matched " + candidate.evidence().stream().limit(3).map(evidence -> evidence.field()).collect(Collectors.joining(", "))
@@ -210,7 +263,7 @@ public final class UiWorkspaceMapper {
     }
 
     private UiContracts.HealthView health(HealthDimension dimension) {
-        return new UiContracts.HealthView(dimension.key(), dimension.label(), dimension.score(), 0, dimension.explanation());
+        return new UiContracts.HealthView(dimension.key(), dimension.label(), dimension.status(), dimension.score(), 0, dimension.explanation());
     }
 
     private UiContracts.ReviewView review(ReviewQueueItem item) {
@@ -238,6 +291,11 @@ public final class UiWorkspaceMapper {
     private static String initials(String value) {
         return java.util.Arrays.stream(value.split("\\s+")).filter(part -> !part.isBlank()).limit(2)
                 .map(part -> part.substring(0, 1).toUpperCase()).collect(Collectors.joining());
+    }
+
+    private static boolean authenticated(Authentication authentication) {
+        return authentication != null && authentication.isAuthenticated() && authentication.getName() != null
+                && !authentication.getName().isBlank() && !"anonymousUser".equals(authentication.getName());
     }
 
     private static int parseYear(String value) {

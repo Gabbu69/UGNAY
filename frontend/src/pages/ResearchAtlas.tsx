@@ -90,7 +90,7 @@ export default function ResearchAtlas() {
 
   const result = isLive ? serverSearch.data : demoPage
   const records = result?.items ?? []
-  const selected = records.find((study) => study.id === selectedId) ?? records[0]
+  const selected = records.find((study) => study.id === selectedId)
   const pageCount = Math.max(1, Math.ceil((result?.totalItems ?? 0) / PAGE_SIZE))
   const refreshDate = result?.generatedAt ? new Intl.DateTimeFormat('en-PH', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(result.generatedAt)) : 'Unavailable'
   const setFilter = (action: () => void) => { action(); setPage(0); setSelectedId('') }
@@ -127,7 +127,7 @@ export default function ResearchAtlas() {
         <section className="catalogue-results paper-panel" aria-busy={serverSearch.isFetching}>
           <div className="catalogue-results-head"><div><span>CATALOGUE RECORDS</span><h2>{result?.totalItems ?? 0} {result?.totalItems === 1 ? 'study' : 'studies'} in scope</h2></div>{serverSearch.isFetching ? <span className="catalogue-loading">Searching…</span> : <StatusPill tone="neutral">Page {page + 1} of {pageCount}</StatusPill>}</div>
           <div className="catalogue-record-list">
-            {records.map((study) => <button key={study.id} className={selected?.id === study.id ? 'is-selected' : ''} onClick={() => setSelectedId(study.id)}>
+            {records.map((study) => <button key={study.id} className={selectedId === study.id ? 'is-selected' : ''} onClick={() => setSelectedId(study.id)} aria-pressed={selectedId === study.id}>
               <span className="catalogue-record-icon">{study.visibility === 'RESTRICTED' ? <LockKeyhole size={16} /> : <LibraryBig size={16} />}</span>
               <span className="catalogue-record-copy"><small>{study.institutionalCode} · {study.departmentCode ?? 'Department unavailable'}</small><strong>{study.title}</strong><em>{study.program ?? 'Program unavailable'} · {study.completionYear ?? study.academicYear ?? 'Year unavailable'}</em><span>{study.keywords.slice(0, 4).map((keyword) => <i key={keyword}>{keyword}</i>)}</span></span>
               <StatusPill tone={study.lifecycleStatus === 'PUBLISHED' || study.lifecycleStatus === 'COMPLETED' ? 'teal' : 'amber'}>{study.lifecycleStatus}</StatusPill><ArrowRight size={16} />

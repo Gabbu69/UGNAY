@@ -11,8 +11,6 @@ import {
 } from '../../lib/researchLabApi'
 import { StatusPill } from '../Primitives'
 
-const pipeline = ['COLLECT', 'VALIDATE', 'CLEAN', 'TRANSFORM', 'STORE', 'ANALYZE']
-
 function DataBars({ values, label, valueLabel }: {
   values: Array<{ key: string; label: string; value: number }>
   label: string
@@ -50,8 +48,16 @@ export function WarehouseWorkbench() {
   })
   const submitFilters = (event: FormEvent) => { event.preventDefault(); setFilters({ ...filterDraft }) }
   const error = analytics.error || continuation.error || load.error || refresh.error
-  const stages = pipeline.map((stage, index) => load.data?.stages.find((item) => item.stage === stage) ?? { stage, order: index + 1, status: 'UNASSESSED', inputCount: 0, outputCount: 0 })
   const data = analytics.data
+  const loadAssessed = load.data != null && load.data.assessmentStatus !== 'UNASSESSED'
+  const analyticsAssessed = data?.assessmentStatus === 'ASSESSED' && Boolean(data.snapshotId)
+  const stages = loadAssessed ? load.data.stages : []
+  const sourceCount = loadAssessed ? load.data.sourceCount : analyticsAssessed ? data?.sourceStudyCount : null
+  const acceptedCount = loadAssessed ? load.data.acceptedCount : null
+  const rejectedCount = loadAssessed ? load.data.rejectedCount : null
+  const loadQualityAssessed = loadAssessed && load.data.quality.assessmentStatus === 'ASSESSED'
+  const analyticsQualityAssessed = analyticsAssessed && data?.quality.assessmentStatus === 'ASSESSED'
+  const qualityIssueCount = loadQualityAssessed ? load.data.quality.issueCount : analyticsQualityAssessed ? data?.quality.issueCount : null
 
   return (
     <div className="warehouse-workbench">
@@ -64,15 +70,15 @@ export function WarehouseWorkbench() {
 
       <section className="pipeline-panel panel-dark" aria-labelledby="pipeline-title">
         <div className="pipeline-head"><div><span>PIPELINE EVIDENCE</span><h2 id="pipeline-title">Collect → Validate → Clean → Transform → Store → Analyze</h2></div>{curator ? <button type="button" className="button button-dark" onClick={() => refresh.mutate()} disabled={refresh.isPending}>{refresh.isPending ? <RefreshCw className="is-spinning" size={16} /> : <RefreshCw size={16} />}{refresh.isPending ? 'Refreshing…' : 'Refresh warehouse'}</button> : null}</div>
-        <ol className="pipeline-rail">{stages.map((stage) => <li key={stage.stage} className={`stage-${stage.status.toLowerCase()}`}><span>{stage.status === 'COMPLETED' ? <Check size={14} /> : stage.order}</span><div><b>{stage.stage}</b><small>{stage.status}</small><em>{stage.inputCount} in · {stage.outputCount} out</em></div><ArrowRight size={15} /></li>)}</ol>
-        <div className="pipeline-summary"><dl><div><dt>Source studies</dt><dd>{load.data?.sourceCount ?? data?.sourceStudyCount ?? 0}</dd></div><div><dt>Accepted</dt><dd>{load.data?.acceptedCount ?? 'UNASSESSED'}</dd></div><div><dt>Rejected</dt><dd>{load.data?.rejectedCount ?? 'UNASSESSED'}</dd></div><div><dt>Quality issues</dt><dd>{load.data?.quality.issueCount ?? data?.quality.issueCount ?? 0}</dd></div></dl><p><ShieldCheck size={15} />A failed load never replaces the latest successful snapshot. Raw catalogue evidence remains authoritative.</p></div>
+        {stages.length ? <ol className="pipeline-rail">{stages.map((stage) => <li key={stage.stage} className={`stage-${stage.status.toLowerCase()}`}><span>{stage.status === 'COMPLETED' ? <Check size={14} /> : stage.order}</span><div><b>{stage.stage}</b><small>{stage.status}</small><em>{stage.status === 'PENDING' ? '—' : `${stage.inputCount} in · ${stage.outputCount} out`}</em></div><ArrowRight size={15} /></li>)}</ol> : <div className="lab-empty inline"><Database size={20} /><div><strong>Pipeline stages are UNASSESSED.</strong><span>No persisted warehouse-stage evidence is available for display.</span></div></div>}
+        <div className="pipeline-summary"><dl><div><dt>Source studies</dt><dd>{sourceCount ?? '—'}</dd></div><div><dt>Accepted</dt><dd>{acceptedCount ?? '—'}</dd></div><div><dt>Rejected</dt><dd>{rejectedCount ?? '—'}</dd></div><div><dt>Quality issues</dt><dd>{qualityIssueCount ?? '—'}</dd></div></dl><p><ShieldCheck size={15} />A failed load never replaces the latest successful snapshot. Raw catalogue evidence remains authoritative.</p></div>
       </section>
 
       <section className="warehouse-filter paper-panel">
         <form onSubmit={submitFilters}><Filter size={17} /><label><span>Department</span><input value={filterDraft.department} onChange={(event) => setFilterDraft({ ...filterDraft, department: event.target.value })} placeholder="All authorized departments" /></label><label><span>From year</span><input type="number" min="1900" max="2200" value={filterDraft.fromYear} onChange={(event) => setFilterDraft({ ...filterDraft, fromYear: event.target.value })} /></label><label><span>To year</span><input type="number" min="1900" max="2200" value={filterDraft.toYear} onChange={(event) => setFilterDraft({ ...filterDraft, toYear: event.target.value })} /></label><button className="button button-secondary">Apply filters</button><a className="button button-ghost" href={warehouseAnalyticsCsvUrl(appliedFilters)}><Download size={15} />CSV</a></form>
       </section>
 
-      {data?.snapshotId ? <>
+      {analyticsAssessed && data ? <>
         <section className="warehouse-metrics"><article><span>VISIBLE STUDIES</span><strong>{data.visibleStudyCount}</strong><small>of {data.sourceStudyCount} snapshot records in scope</small></article><article><span>VALIDATED YEARS</span><strong>{data.studiesPerYear.length}</strong><small>{data.unavailableYearCount} rows have unavailable year</small></article><article><span>REPEATED TOPICS</span><strong>{data.repeatedTopics.length}</strong><small>appearing in at least two distinct studies</small></article><article><span>RESEARCH AREAS</span><strong>{data.commonResearchAreas.length}</strong><small>curated taxonomy assignments only</small></article></section>
 
         <div className="warehouse-analysis-grid">

@@ -124,6 +124,28 @@ class EvaluationWorkflowTest {
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("two distinct reviewers");
     }
 
+    @Test
+    void adjudicatorCannotAlsoSupplyOneOfTheCurrentReviews() {
+        String suffix = UUID.randomUUID().toString();
+        String independentReviewer = "independent-reviewer-" + suffix + "@ugnay.local";
+        insertAccount(independentReviewer);
+        UUID studyId = insertStudy("Independent adjudication " + suffix);
+        var dataset = service.createDataset("Independent qrels " + suffix, null,
+                List.of(studyId), "admin@ugnay.local");
+        var query = service.addQuery(dataset.versionId(), new EvaluationService.StructuredQuery(
+                "Q-" + suffix, EvaluationModels.QuerySplit.TEST, "Independent research judgment",
+                "Two reviews must remain distinct from the final adjudicator.", List.of("Protect qrel independence"),
+                "", "", "", "research", "", "", ""), "admin@ugnay.local");
+        service.judge(query.id(), studyId, 2, "The bootstrap coordinator supplied the first current review.",
+                "admin@ugnay.local");
+        service.judge(query.id(), studyId, 2, "An independent account supplied the second current review.",
+                independentReviewer);
+
+        assertThatThrownBy(() -> service.adjudicate(query.id(), studyId, 2,
+                "The same coordinator must not adjudicate evidence they reviewed.", "admin@ugnay.local"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("independent");
+    }
+
     private void insertAccount(String email) {
         byte[] department = jdbc.queryForObject("SELECT id FROM departments ORDER BY code LIMIT 1", byte[].class);
         jdbc.update("INSERT INTO user_accounts(id,department_id,email,display_name,account_status,row_version,created_at) VALUES(?,?,?,?,?,?,?)",

@@ -23,6 +23,11 @@ public class ApiExceptionHandler {
         return problem(HttpStatus.UNPROCESSABLE_ENTITY, "Request cannot be applied", exception.getMessage(), request);
     }
 
+    @ExceptionHandler(EvidenceVerificationException.class)
+    ProblemDetail evidenceVerification(EvidenceVerificationException exception, HttpServletRequest request) {
+        return problem(HttpStatus.UNPROCESSABLE_ENTITY, "Evidence verification cannot be applied", exception.getMessage(), request);
+    }
+
     @ExceptionHandler(PreconditionFailedException.class)
     ProblemDetail precondition(PreconditionFailedException exception, HttpServletRequest request) {
         return problem(HttpStatus.PRECONDITION_FAILED, "Stale resource version", exception.getMessage(), request);
@@ -37,6 +42,11 @@ public class ApiExceptionHandler {
     ProblemDetail conflict(DataIntegrityViolationException exception, HttpServletRequest request) {
         return problem(HttpStatus.CONFLICT, "Conflicting record",
                 "The request conflicts with an existing account or scholarly record.", request);
+    }
+
+    @ExceptionHandler(IdempotencyConflictException.class)
+    ProblemDetail idempotencyConflict(IdempotencyConflictException exception, HttpServletRequest request) {
+        return problem(HttpStatus.CONFLICT, "Idempotency key conflict", exception.getMessage(), request);
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

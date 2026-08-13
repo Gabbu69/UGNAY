@@ -35,10 +35,15 @@ jobs:
           chmod +x backend/mvnw
           backend/mvnw -q package
           sha256sum backend/target/ugnay-backend-0.2.0.jar > SHA256SUMS-app.txt
+          expected="$(jq -r '.assets.app.sha256' infra/windows-lite/runtime-manifest.json)"
+          actual="$(sha256sum backend/target/ugnay-backend-0.2.0.jar | cut -d ' ' -f 1)"
+          test "$actual" = "$expected"
       - name: Publish application asset
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          fail_on_unmatched_files: true
+          overwrite_files: true
           files: |
             backend/target/ugnay-backend-0.2.0.jar
             SHA256SUMS-app.txt

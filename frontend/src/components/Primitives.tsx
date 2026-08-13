@@ -33,11 +33,12 @@ export function RiskPill({ level }: { level: RiskLevel }) {
 }
 
 export function ScoreRing({ score, label, size = 'medium' }: { score: number | null; label: string; size?: 'small' | 'medium' | 'large' }) {
-  const value = score ?? 0
+  if (score === null) return <div className={`score-unassessed score-${size}`}><strong>—</strong><span>{label}</span></div>
+  const value = score
   const state = healthLabel(score).toLowerCase().replace(' ', '-')
   return (
     <div className={`score-ring score-${size} state-${state}`} style={{ '--score': value } as React.CSSProperties}>
-      <div><strong>{score === null ? '—' : score}</strong><span>{label}</span></div>
+      <div><strong>{score}</strong><span>{label}</span></div>
     </div>
   )
 }

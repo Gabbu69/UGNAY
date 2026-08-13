@@ -108,10 +108,13 @@ export function AppShell() {
   const current = navigation.find((item) => item.to.startsWith('/research-lab')
     ? location.pathname.startsWith('/research-lab')
     : location.pathname === item.to || location.pathname.endsWith(item.to))
-  const selectedProjectId = projectId ?? workspace?.project.id
+  const selectedProjectId = projectId
+  const selectedProject = workspace?.projects.find((project) => project.id === selectedProjectId)
+    ?? (workspace?.project?.id === selectedProjectId ? workspace?.project : undefined)
   const linkedArtifacts = workspace ? new Set(workspace.traceEdges.flatMap((edge) => [edge.source, edge.target])).size : 0
   const traceArtifactCount = workspace?.traceNodes.length ?? 0
   const selectProject = (nextProjectId: string) => {
+    if (!nextProjectId) return
     const suffix = current?.projectScoped ? current.to : '/alignment'
     navigate(`/projects/${nextProjectId}${suffix}`)
   }
@@ -218,10 +221,11 @@ export function AppShell() {
             <span>{current?.shortLabel ?? 'Workspace'}</span>
             <i />
             <label className="project-switcher">
-              <span>{workspace?.project.code ?? 'UNASSESSED'}</span>
-              <strong>{workspace?.project.title ?? 'Loading project...'}</strong>
+              <span>{selectedProject?.code ?? 'NO PROJECT'}</span>
+              <strong>{selectedProject?.title ?? 'Select a persisted project'}</strong>
               <select aria-label="Select research project" value={selectedProjectId ?? ''}
                 onChange={(event) => selectProject(event.target.value)} disabled={!workspace?.projects.length}>
+                <option value="">Select a project...</option>
                 {workspace?.projects.map((project) => <option key={project.id} value={project.id}>{project.code} - {project.title}</option>)}
               </select>
               <ChevronDown size={15} />
@@ -238,6 +242,8 @@ export function AppShell() {
             </button>
           </div>
         </header>
+
+        {workspaceQuery.data?.source === 'UNAVAILABLE' ? <div className="connection-banner" role="alert"><span><b>Live evidence unavailable.</b> No demo values or cached decisions are being shown.</span><button type="button" onClick={() => workspaceQuery.refetch()} disabled={workspaceQuery.isFetching}>{workspaceQuery.isFetching ? 'Reconnecting...' : 'Reconnect'}</button></div> : null}
 
         <main id="main-content" className="main-canvas">
           <AnimatePresence mode="wait">

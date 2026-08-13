@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
@@ -16,8 +17,10 @@ import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -129,10 +132,44 @@ class StudyAuthorizationWebTest {
                 .andExpect(status().isForbidden());
     }
 
+    @Test
+    void lineageCheckRequiresMembershipAndDoesNotRevealWhetherAProjectExists() throws Exception {
+        UUID outsiderId = UUID.randomUUID();
+        byte[] cics = jdbc.queryForObject("SELECT id FROM departments WHERE code='CICS'", byte[].class);
+        String outsiderEmail = "lineage-outsider-" + outsiderId + "@example.test";
+        insertAccount(outsiderId, cics, outsiderEmail);
+
+        UUID source = UUID.randomUUID();
+        UUID target = UUID.randomUUID();
+        String knownProject = lineageCheck(PROJECT, source, target);
+        String unknownProject = lineageCheck(UUID.randomUUID(), source, target);
+        var knownResponse = mvc.perform(post("/api/v1/lineage/check").with(csrf())
+                        .with(user(outsiderEmail).roles("STUDENT"))
+                        .contentType(MediaType.APPLICATION_JSON).content(knownProject))
+                .andExpect(status().isForbidden()).andReturn().getResponse();
+        var unknownResponse = mvc.perform(post("/api/v1/lineage/check").with(csrf())
+                        .with(user(outsiderEmail).roles("STUDENT"))
+                        .contentType(MediaType.APPLICATION_JSON).content(unknownProject))
+                .andExpect(status().isForbidden()).andReturn().getResponse();
+
+        assertThat(knownResponse.getContentAsString()).isEqualTo(unknownResponse.getContentAsString());
+        mvc.perform(post("/api/v1/lineage/check").with(csrf())
+                        .with(user("admin@ugnay.local").roles("STUDENT"))
+                        .contentType(MediaType.APPLICATION_JSON).content(knownProject))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").isBoolean())
+                .andExpect(jsonPath("$.wouldCreateCycle").isBoolean());
+    }
+
     private void insertAccount(UUID id, byte[] department, String email) {
         jdbc.update("INSERT INTO user_accounts(id,department_id,email,display_name,account_status,row_version,created_at) "
                         + "VALUES(?,?,?,?,?,?,?)",
                 bytes(id), department, email, "Authorization test account", "ACTIVE", 0, Timestamp.from(Instant.now()));
+    }
+
+    private static String lineageCheck(UUID projectId, UUID sourceId, UUID targetId) {
+        return "{\"projectId\":\"" + projectId + "\",\"sourceId\":\"" + sourceId
+                + "\",\"targetId\":\"" + targetId + "\",\"lineageType\":\"CONTINUES\"}";
     }
 
     private static byte[] bytes(UUID id) {

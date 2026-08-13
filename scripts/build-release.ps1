@@ -6,6 +6,8 @@ $frontend = Join-Path $repository 'frontend'
 $backend = Join-Path $repository 'backend'
 $generated = Join-Path $backend 'target\generated-static'
 
+if (-not $env:JAVA_HOME) { throw 'JAVA_HOME must point to Java 21 for the release build.' }
+
 Push-Location $frontend
 try {
     if (-not (Test-Path -LiteralPath (Join-Path $frontend 'node_modules'))) { npm ci }
@@ -13,12 +15,17 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Frontend production build failed.' }
 } finally { Pop-Location }
 
+Push-Location $backend
+try {
+    & (Join-Path $backend 'mvnw.cmd') -q clean
+    if ($LASTEXITCODE -ne 0) { throw 'Backend clean failed.' }
+} finally { Pop-Location }
+
 [void](New-Item -ItemType Directory -Force -Path $generated)
 Copy-Item -Path (Join-Path $frontend 'dist\*') -Destination $generated -Recurse -Force
 
 Push-Location $backend
 try {
-    if (-not $env:JAVA_HOME) { throw 'JAVA_HOME must point to Java 21 for the release build.' }
     $arguments = @('-q', 'package')
     if ($SkipTests) { $arguments = @('-q', '-DskipTests', 'package') }
     & (Join-Path $backend 'mvnw.cmd') @arguments

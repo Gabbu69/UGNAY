@@ -1,6 +1,7 @@
 package com.ugnay.platform.evaluation;
 
 import com.ugnay.platform.shared.JdbcAuditService;
+import com.ugnay.platform.shared.HeavyOperationCoordinator;
 import jakarta.transaction.Transactional;
 import org.springframework.stereotype.Service;
 import tools.jackson.core.JacksonException;
@@ -26,8 +27,6 @@ import static com.ugnay.platform.evaluation.EvaluationModels.*;
 /** Coordinates the reproducible experiment lifecycle; it never mutates academic decisions. */
 @Service
 public class EvaluationService {
-    private static final int MAX_CORPUS_SIZE = 10_000;
-    private static final int MAX_QUERY_COUNT = 500;
     private static final int MAX_PAGE_SIZE = 100;
     private static final String CORPUS_UNAVAILABLE = "One or more requested studies are unavailable for evaluation.";
     private static final String BOUNDARY = "Evaluation compares retrieval evidence only. It cannot approve a thesis, declare plagiarism, certify duplication, or change a New/Improve/Continue decision.";
@@ -36,13 +35,25 @@ public class EvaluationService {
     private final EvaluationRetrievalEngine retrieval;
     private final ObjectMapper objectMapper;
     private final JdbcAuditService audit;
+    private final HeavyOperationCoordinator heavyOperations;
+    private final int maxCorpusSize;
+    private final int maxQueryCount;
+    private final int repetitions;
 
     public EvaluationService(JdbcEvaluationRepository repository, EvaluationRetrievalEngine retrieval,
-                             ObjectMapper objectMapper, JdbcAuditService audit) {
+                             ObjectMapper objectMapper, JdbcAuditService audit,
+                             HeavyOperationCoordinator heavyOperations,
+                             @org.springframework.beans.factory.annotation.Value("${ugnay.evaluation.max-corpus-size:10000}") int maxCorpusSize,
+                             @org.springframework.beans.factory.annotation.Value("${ugnay.evaluation.max-query-count:500}") int maxQueryCount,
+                             @org.springframework.beans.factory.annotation.Value("${ugnay.evaluation.repetitions:5}") int repetitions) {
         this.repository = repository;
         this.retrieval = retrieval;
         this.objectMapper = objectMapper;
         this.audit = audit;
+        this.heavyOperations = heavyOperations;
+        this.maxCorpusSize = Math.max(1, Math.min(maxCorpusSize, 10_000));
+        this.maxQueryCount = Math.max(1, Math.min(maxQueryCount, 500));
+        this.repetitions = Math.max(1, Math.min(repetitions, 20));
     }
 
     public record StructuredQuery(String externalKey, QuerySplit split, String title, String problemStatement,
@@ -55,11 +66,11 @@ public class EvaluationService {
         String safeName = required(name, "Dataset name", 240);
         if (description != null && description.length() > 4_000) throw new IllegalArgumentException("Dataset description must not exceed 4,000 characters.");
         List<UUID> selected = requestedStudyIds == null ? List.of() : new ArrayList<>(new LinkedHashSet<>(requestedStudyIds));
-        if (selected.size() > MAX_CORPUS_SIZE) throw new IllegalArgumentException("An evaluation corpus may contain at most 10,000 studies.");
+        if (selected.size() > maxCorpusSize) throw new IllegalArgumentException("An evaluation corpus may contain at most " + maxCorpusSize + " studies in this runtime profile.");
         List<JdbcEvaluationRepository.SourceStudy> studies = repository.sourceStudies(selected);
         if (!selected.isEmpty() && studies.size() != selected.size()) throw new IllegalArgumentException(CORPUS_UNAVAILABLE);
         if (studies.isEmpty()) throw new IllegalArgumentException("The evaluation corpus cannot be empty.");
-        if (studies.size() > MAX_CORPUS_SIZE) throw new IllegalArgumentException("An evaluation corpus may contain at most 10,000 studies.");
+        if (studies.size() > maxCorpusSize) throw new IllegalArgumentException("An evaluation corpus may contain at most " + maxCorpusSize + " studies in this runtime profile.");
 
         UUID actorId = repository.requireUserId(actorEmail);
         List<JdbcEvaluationRepository.CorpusInsert> corpus = new ArrayList<>();
@@ -93,7 +104,7 @@ public class EvaluationService {
     @Transactional
     public QueryView addQuery(UUID versionId, StructuredQuery input, String actorEmail) {
         repository.lockDraft(versionId);
-        if (repository.queries(versionId).size() >= MAX_QUERY_COUNT) throw new IllegalArgumentException("A dataset may contain at most 500 queries.");
+        if (repository.queries(versionId).size() >= maxQueryCount) throw new IllegalArgumentException("A dataset may contain at most " + maxQueryCount + " queries in this runtime profile.");
         String externalKey = required(input.externalKey(), "External query key", 120);
         if (!externalKey.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,119}")) {
             throw new IllegalArgumentException("External query keys may use letters, numbers, dot, underscore, and hyphen.");
@@ -143,6 +154,9 @@ public class EvaluationService {
             throw new IllegalArgumentException("Adjudication requires current judgments from two distinct reviewers.");
         }
         UUID adjudicatorId = repository.requireUserId(actorEmail);
+        if (judgments.stream().anyMatch(judgment -> judgment.reviewerId().equals(adjudicatorId))) {
+            throw new IllegalArgumentException("The qrel adjudicator must be independent from both current reviewers.");
+        }
         QrelView view = repository.insertQrel(queryId, studyId, safeGrade, safeRationale, adjudicatorId,
                 actorEmail.toLowerCase(), Instant.now());
         audit.append(actorEmail, "EVALUATION_QREL_ADJUDICATED", "EVALUATION_QUERY", queryId,
@@ -222,13 +236,13 @@ public class EvaluationService {
                 "corpusSha256", dataset.corpusSha256(), "algorithms", List.of(
                         configuration(Algorithm.LEXICAL_KEYWORD), configuration(Algorithm.TF_IDF),
                         configuration(Algorithm.SEMANTIC_E5), configuration(Algorithm.HYBRID)),
-                "cutoffs", CUTOFFS, "primaryK", PRIMARY_K, "warmupRuns", 1, "timedRepetitions", 5,
+                "cutoffs", CUTOFFS, "primaryK", PRIMARY_K, "warmupRuns", 1, "timedRepetitions", repetitions,
                 "executionSeed", seed, "codeBuild", codeBuild, "environmentSha256", environmentSha,
                 "semanticProvider", retrieval.semanticConfigurationManifest(),
                 "unjudgedPolicy", "NON_RELEVANT", "tieBreak", "STUDY_UUID_ASCENDING");
         String manifestJson = json(manifest);
         UUID runId = repository.createRun(versionId, environmentJson, environmentSha, manifestJson,
-                sha256(manifestJson), codeBuild, seed, actorId, Instant.now());
+                sha256(manifestJson), codeBuild, seed, actorId, repetitions, Instant.now());
         audit.append(actorEmail, "EVALUATION_RUN_QUEUED", "EVALUATION_RUN", runId,
                 "Queued a four-arm comparison against one frozen dataset and qrel set.",
                 Map.of("datasetVersionId", versionId.toString(), "datasetSha256", dataset.datasetSha256()));
@@ -236,8 +250,10 @@ public class EvaluationService {
     }
 
     public void executeRun(UUID runId) {
-        if (!repository.claimRun(runId, Instant.now())) return;
-        try {
+        var lease = heavyOperations.acquire("RETRIEVAL_EVALUATION");
+        if (lease.isEmpty()) return;
+        try (var ignored = lease.orElseThrow()) {
+            if (!repository.claimRun(runId, Instant.now())) return;
             JdbcEvaluationRepository.RunRecord run = repository.run(runId);
             List<JdbcEvaluationRepository.CorpusRow> corpusRows = repository.corpus(run.datasetVersionId());
             List<JdbcEvaluationRepository.QueryRow> queryRows = repository.queries(run.datasetVersionId());
@@ -259,7 +275,7 @@ public class EvaluationService {
                 String configJson = json(config);
                 UUID algorithmRunId = repository.startAlgorithm(runId, algorithm, configJson, sha256(configJson), Instant.now());
                 try {
-                    EvaluationRetrievalEngine.Outcome outcome = retrieval.evaluate(algorithm, queries, studies, 5);
+                    EvaluationRetrievalEngine.Outcome outcome = retrieval.evaluate(algorithm, queries, studies, repetitions);
                     boolean unavailable = outcome.status() == RunStatus.UNAVAILABLE;
                     Map<Integer, List<EvaluationMetrics.QueryResult>> resultsByK = new LinkedHashMap<>();
                     CUTOFFS.forEach(k -> resultsByK.put(k, new ArrayList<>()));

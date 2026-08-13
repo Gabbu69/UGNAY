@@ -1,5 +1,8 @@
 import type {
   CompletionPackageRecord,
+  EvidenceReferenceRecord,
+  EvidenceReferenceType,
+  AssessmentStatus,
   DecisionDisposition,
   DiscoveryInput,
   DiscoveryRun,
@@ -76,26 +79,24 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
   return request<T>(path, init)
 }
 
-const unavailableProject: WorkspaceData['project'] = {
-  id: 'unavailable', code: 'UNASSESSED', title: 'No persisted project is available', stage: 'UNASSESSED',
-  route: 'REVIEW_REQUIRED', department: 'Unavailable', adviser: 'Unassigned', updatedAt: '', openFindings: 0, health: 0,
-}
-
 const unavailableWorkspace: WorkspaceData = {
   currentUser: { name: 'Not signed in', initials: 'UG', roles: [], department: 'University research workspace' },
-  project: unavailableProject,
-  projects: [], studies: [], traceNodes: [], traceEdges: [], findings: [], health: [], reviewQueue: [], lineage: [], generatedAt: '',
+  project: null,
+  projects: [], studies: [], traceNodes: [], traceEdges: [], graphTruncated: false, graphTotalNodes: 0, graphTotalEdges: 0, findings: [], health: [], reviewQueue: [], lineage: [], generatedAt: '',
 }
 
 function coerceWorkspace(payload: Partial<WorkspaceData>): WorkspaceData {
   const projects = payload.projects ?? []
   return {
     currentUser: payload.currentUser ?? unavailableWorkspace.currentUser,
-    project: payload.project ?? projects[0] ?? unavailableProject,
+    project: payload.project ?? null,
     projects,
     studies: payload.studies ?? [],
     traceNodes: payload.traceNodes ?? [],
     traceEdges: payload.traceEdges ?? [],
+    graphTruncated: payload.graphTruncated ?? false,
+    graphTotalNodes: payload.graphTotalNodes ?? payload.traceNodes?.length ?? 0,
+    graphTotalEdges: payload.graphTotalEdges ?? payload.traceEdges?.length ?? 0,
     findings: payload.findings ?? [],
     health: payload.health ?? [],
     reviewQueue: payload.reviewQueue ?? [],
@@ -262,51 +263,56 @@ export async function getWorkspace(projectId?: string): Promise<WorkspaceEnvelop
 }
 
 export async function runDiscovery(input: DiscoveryInput): Promise<DiscoveryRun> {
-  try {
-    return await request<DiscoveryRun>('/discovery-runs', { method: 'POST', body: JSON.stringify(input) })
-  } catch {
-    return {
-      id: `demo-run-${Date.now()}`,
-      status: 'PARTIAL',
-      recommendation: 'REVIEW_REQUIRED',
-      confidence: 0,
-      candidates: [],
-      algorithmVersion: 'UNAVAILABLE-NOT-ASSESSED',
-    }
-  }
+  return request<DiscoveryRun>('/discovery-runs', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export type { EvidenceReferenceType } from '../types/domain'
+
+export interface IntakeEvidenceReferenceInput {
+  type: EvidenceReferenceType
+  label: string
+  location?: string
+  storedDocumentId?: string
+  sha256?: string
 }
 
 export interface PersistedIntakeInput {
-  title: string
-  problemStatement: string
-  stakeholder: string
-  siteContext: string
-  objectives: string[]
+  problem: {
+    title: string
+    problemStatement: string
+    stakeholder: string
+    affectedUsers: string
+    siteContext: string
+    desiredOutcome: string
+    constraints?: string
+    privacyClassification: 'PUBLIC' | 'INTERNAL' | 'RESTRICTED'
+  }
+  proposal: {
+    title: string
+    objectives: string[]
+    proposedSolution: string
+    methodology?: string
+    dataSources?: string
+    technology?: string
+    intendedUsers?: string
+  }
+  evidenceReferences?: IntakeEvidenceReferenceInput[]
 }
 
-export async function submitIntakeForDiscovery(input: PersistedIntakeInput): Promise<DiscoveryRun> {
-  const problem = await request<{ id: string }>('/problems', { method: 'POST', body: JSON.stringify({
-    title: input.title,
-    problemStatement: input.problemStatement,
-    stakeholder: input.stakeholder,
-    affectedUsers: input.stakeholder,
-    siteContext: input.siteContext,
-    desiredOutcome: input.objectives.join(' '),
-    constraints: 'No constraints recorded in the current intake.',
-    privacyClassification: 'INTERNAL',
-    evidenceCount: 0,
-  }) })
-  const proposal = await request<{ id: string }>('/proposals', { method: 'POST', body: JSON.stringify({
-    problemId: problem.id,
-    title: input.title,
-    objectives: input.objectives,
-    proposedSolution: 'Solution approach intentionally deferred until academic review.',
-    methodology: 'Not yet assessed',
-    dataSources: 'No data sources recorded',
-    technology: 'Not yet selected',
-    intendedUsers: input.stakeholder,
-  }) })
-  return request<DiscoveryRun>('/discovery-runs', { method: 'POST', body: JSON.stringify({ proposalId: proposal.id }) })
+export interface IntakeResult {
+  idempotencyKey: string
+  replayed: boolean
+  problem: { id: string }
+  proposal: ProposalRecord
+  discovery: DiscoveryRun
+}
+
+export async function submitIntakeForDiscovery(input: PersistedIntakeInput, idempotencyKey: string): Promise<IntakeResult> {
+  return request<IntakeResult>('/intakes', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify(input),
+  })
 }
 
 export async function listStudies(): Promise<Study[]> {
@@ -433,14 +439,19 @@ export interface TestExecutionInput {
 }
 
 export interface CompletionEvidenceInput {
-  codeDataRightsConfirmed: boolean
   repositoryUrl: string
   commitHash: string
   setupInstructions: string
   limitations: string[]
   recommendations: string[]
   unfinishedWork: string[]
-  criteria: Array<{ key: string; completion: number; explanation: string }>
+  evidenceReferences: Array<{
+    type: EvidenceReferenceType
+    label: string
+    location?: string
+    storedDocumentId?: string
+    sha256?: string
+  }>
 }
 
 export interface AuthoringResult<T> {
@@ -449,7 +460,7 @@ export interface AuthoringResult<T> {
   traceability: ProjectTraceability
 }
 
-interface ProposalRecord {
+export interface ProposalRecord {
   id: string
   title: string
   problemStatement: string
@@ -459,26 +470,35 @@ interface ProposalRecord {
   submittedAt: string
 }
 
-interface DiscoveryRecord {
+export interface DiscoveryRecord {
   id: string
   proposalId: string
-  assessmentStatus: string
+  assessmentStatus?: AssessmentStatus
+  status?: AssessmentStatus
   recommendation: string
-  confidence: number
+  confidenceState: AssessmentStatus
+  confidence: number | null
   algorithmVersion: string
   explanation: string
   candidates: Array<{ studyId: string; problemScore: number; objectiveScore: number; solutionScore: number; confidence: number }>
   createdAt: string
 }
 
-interface DecisionRecord {
+export interface DecisionRecord {
+  id?: string
   proposalId: string
+  discoveryRunId?: string
+  disposition?: DecisionDisposition
+  rationale?: string
+  primaryPredecessorId?: string | null
+  decidedAt?: string
+  decidedBy?: string
 }
 
 export interface ChangeRequestRecord {
   id: string
   projectId: string
-  basedOnBaselineId: string | null
+  basedOnBaselineId: string
   title: string
   rationale: string
   status: string
@@ -490,8 +510,10 @@ export interface ChangeRequestRecord {
 export interface ImpactPreviewRecord {
   changeRequestId: string
   basedOnBaselineId: string
+  operationSetVersion: number
+  operationSetSha256: string
   baselineCurrent: boolean
-  scopeRisk: { status: string; score: number | null; band: string | null; governance: number; alignment: number; controlledGrowth: number; boundary: number; explanations: string[] }
+  scopeRisk: { status: AssessmentStatus; score: number | null; band: string | null; governance: number | null; alignment: number | null; controlledGrowth: number | null; boundary: number | null; explanations: string[] }
   impactedArtifacts: Array<{ itemId: string; itemKey: string; itemType: TraceItemType; title: string; hopCount: number; severity: string; evidenceBecomesStale: boolean; reason: string }>
   documentsToRevise: string[]
   calculatedAt: string
@@ -529,6 +551,8 @@ export interface ChangeOperationRecord extends ChangeOperationInput {
 }
 
 export interface AcademicDecisionInput {
+  proposalId: string
+  discoveryRunId: string
   disposition: DecisionDisposition
   rationale: string
   primaryPredecessorId?: string
@@ -542,8 +566,17 @@ export interface AcademicDecisionResult {
 
 export interface DecisionContext {
   proposal: ProposalRecord | null
+  proposalObjectives: ProposalObjectiveRecord[]
   discovery: DiscoveryRecord | null
-  decided: boolean
+  candidateStudies: Study[]
+  decision: DecisionRecord | null
+  adviserRecommendations: AdviserRecommendationRecord[]
+}
+
+export interface ProposalObjectiveRecord {
+  id: string
+  order: number
+  statement: string
 }
 
 export interface AdviserRecommendationRecord {
@@ -557,22 +590,62 @@ export interface AdviserRecommendationRecord {
 }
 
 export interface RouteEvidenceAssessment {
-  continuationReady: boolean
-  continuationCoverage: number
-  codeAccess: boolean
-  dataAccess: boolean
-  improvementReady: boolean
-  improvementClaimCount: number
+  continuationState: AssessmentStatus
+  continuationCoverage?: number | null
+  codeAccess?: boolean | null
+  dataAccess?: boolean | null
+  improvementState: AssessmentStatus
+  improvementClaimCount?: number | null
 }
 
-export async function getDecisionContext(): Promise<DecisionContext> {
-  const [proposals, runs, decisions] = await Promise.all([
-    request<ProposalRecord[]>('/proposals'), request<DiscoveryRecord[]>('/discovery-runs'), request<DecisionRecord[]>('/proposal-decisions'),
-  ])
-  const decidedIds = new Set(decisions.map((item) => item.proposalId))
-  const discovery = runs.find((run) => proposals.some((proposal) => proposal.id === run.proposalId) && !decidedIds.has(run.proposalId)) ?? runs[0] ?? null
-  const proposal = discovery ? proposals.find((item) => item.id === discovery.proposalId) ?? null : null
-  return { proposal, discovery, decided: Boolean(discovery && decidedIds.has(discovery.proposalId)) }
+export interface AuthorizedStudyDetail {
+  id: string
+  institutionalCode: string
+  title: string
+  academicYear: string
+  department: string
+  lifecycleStatus: string
+  visibility: string
+  abstractText: string
+  problemStatement: string
+  objectives: string[]
+  keywords: string[]
+  continuationItems: ContinuationItemRecord[]
+}
+
+export interface ObjectiveContinuationLinkInput {
+  proposalObjectiveId: string
+  continuationItemId: string
+  rationale: string
+}
+
+export interface ContinuationEvidenceInput {
+  predecessorStudyId: string
+  objectiveLinks: ObjectiveContinuationLinkInput[]
+  codeAccessConfirmed: boolean
+  dataAccessConfirmed: boolean
+  accessNotes: string
+}
+
+export interface ImprovementClaimInput {
+  predecessorStudyId: string
+  continuationItemId: string
+  claim: string
+  baselineMeasure: string
+  targetMeasure: string
+  evaluationMethod: string
+}
+
+export function listDecisionProposals() {
+  return request<ProposalRecord[]>('/proposals')
+}
+
+export function listDiscoveryRuns() {
+  return request<DiscoveryRecord[]>('/discovery-runs')
+}
+
+export async function getDecisionContext(proposalId: string, discoveryRunId: string): Promise<DecisionContext> {
+  return request<DecisionContext>(`/proposals/${encodeURIComponent(proposalId)}/decision-context/${encodeURIComponent(discoveryRunId)}`)
 }
 
 export async function getAdviserRecommendations(proposalId: string) {
@@ -592,6 +665,24 @@ export async function recordAdviserRecommendation(
 
 export async function getRouteEvidence(proposalId: string, predecessorId: string) {
   return request<RouteEvidenceAssessment>(`/proposals/${encodeURIComponent(proposalId)}/route-evidence/${encodeURIComponent(predecessorId)}`)
+}
+
+export async function getAuthorizedStudyDetail(studyId: string) {
+  return request<AuthorizedStudyDetail>(`/studies/${encodeURIComponent(studyId)}`)
+}
+
+export async function recordContinuationEvidence(proposalId: string, input: ContinuationEvidenceInput) {
+  return request<unknown>(`/proposals/${encodeURIComponent(proposalId)}/continuation-evidence`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function recordImprovementClaim(proposalId: string, input: ImprovementClaimInput) {
+  return request<unknown>(`/proposals/${encodeURIComponent(proposalId)}/improvement-claims`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
 }
 
 export interface CompletionAssessment {
@@ -614,6 +705,10 @@ export async function getCompletionPackage(projectId: string): Promise<Completio
   return request<CompletionPackageRecord>(`/projects/${projectId}/completion-package`)
 }
 
+export async function getCompletionEvidenceReferences(projectId: string): Promise<EvidenceReferenceRecord[]> {
+  return request<EvidenceReferenceRecord[]>(`/projects/${projectId}/completion-package/evidence-references`)
+}
+
 export interface ContinuationItemRecord {
   id: string
   studyId: string
@@ -624,8 +719,63 @@ export interface ContinuationItemRecord {
   claimed: boolean
 }
 
-export async function getContinuationItems(): Promise<ContinuationItemRecord[]> {
-  return request<ContinuationItemRecord[]>('/continuation-items')
+export async function getContinuationItems(projectId: string): Promise<ContinuationItemRecord[]> {
+  return request<ContinuationItemRecord[]>(`/continuation-items?projectId=${encodeURIComponent(projectId)}`)
+}
+
+export interface ProjectReviewRecord {
+  id: string
+  projectId: string
+  type: string
+  title: string
+  projectCode: string
+  severity: 'INFO' | 'WARNING' | 'HIGH' | 'CRITICAL'
+  requiredRole: string
+  reason: string
+  dueAt: string
+  status: string
+  history: ProjectReviewHistoryRecord[]
+}
+
+export interface ProjectReviewHistoryRecord {
+  id: string
+  eventType: string
+  message: string
+  evidenceLocation?: string | null
+  actorEmail: string
+  createdAt: string
+}
+
+export interface ReviewRevisionInput {
+  message: string
+  evidenceLocation?: string
+}
+
+export interface ReviewRevisionResult {
+  project: ProjectRecord
+  review: ProjectReviewRecord
+}
+
+export async function getProjectReviewQueue(projectId: string): Promise<ProjectReviewRecord[]> {
+  return request<ProjectReviewRecord[]>(`/projects/${encodeURIComponent(projectId)}/reviews`)
+}
+
+export async function requestReviewRevision(projectId: string, reviewId: string, input: ReviewRevisionInput): Promise<ReviewRevisionResult> {
+  const etag = await exactProjectEtag(projectId)
+  return request<ReviewRevisionResult>(`/projects/${encodeURIComponent(projectId)}/reviews/${encodeURIComponent(reviewId)}/revision-requests`, {
+    method: 'POST',
+    headers: { 'If-Match': etag },
+    body: JSON.stringify({ message: input.message, ...(input.evidenceLocation ? { evidenceLocation: input.evidenceLocation } : {}) }),
+  })
+}
+
+export async function submitReviewRevisionResponse(projectId: string, reviewId: string, input: ReviewRevisionInput): Promise<ReviewRevisionResult> {
+  const etag = await exactProjectEtag(projectId)
+  return request<ReviewRevisionResult>(`/projects/${encodeURIComponent(projectId)}/reviews/${encodeURIComponent(reviewId)}/revision-responses`, {
+    method: 'POST',
+    headers: { 'If-Match': etag },
+    body: JSON.stringify({ message: input.message, ...(input.evidenceLocation ? { evidenceLocation: input.evidenceLocation } : {}) }),
+  })
 }
 
 export async function claimContinuationItem(projectId: string, continuationItemId: string, successorObjectiveId: string, rationale: string): Promise<unknown> {
@@ -683,23 +833,14 @@ export async function updateCompletionEvidence(
 }
 
 export async function recordAcademicDecision(input: AcademicDecisionInput): Promise<AcademicDecisionResult> {
-  const [proposals, runs, decisions] = await Promise.all([
-    request<ProposalRecord[]>('/proposals'),
-    request<DiscoveryRecord[]>('/discovery-runs'),
-    request<DecisionRecord[]>('/proposal-decisions'),
-  ])
-  const proposalIds = new Set(proposals.map((proposal) => proposal.id))
-  const decidedProposalIds = new Set(decisions.map((decision) => decision.proposalId))
-  const discovery = runs.find((run) => proposalIds.has(run.proposalId) && !decidedProposalIds.has(run.proposalId))
-  if (!discovery) throw new ApiProblem(409, 'No submitted proposal with a completed discovery run is available for a formal decision.')
   return request<AcademicDecisionResult>('/proposal-decisions', {
     method: 'POST',
     body: JSON.stringify({
-      proposalId: discovery.proposalId,
-      discoveryRunId: discovery.id,
+      proposalId: input.proposalId,
+      discoveryRunId: input.discoveryRunId,
       disposition: input.disposition,
       rationale: input.rationale,
-      primaryPredecessorId: input.disposition === 'APPROVE_IMPROVE' || input.disposition === 'APPROVE_CONTINUE'
+      primaryPredecessorId: input.disposition === 'APPROVE_IMPROVE' || input.disposition === 'APPROVE_CONTINUE' || input.disposition === 'CLOSE_AS_DUPLICATE'
         ? input.primaryPredecessorId
         : null,
     }),
@@ -731,23 +872,25 @@ export async function actOnFinding(
   })
 }
 
-export async function previewLatestChangeImpact(projectId: string): Promise<unknown> {
-  const changes = await request<ChangeRequestRecord[]>('/change-requests')
-  const change = changes.find((candidate) => candidate.projectId === projectId)
-  if (!change) throw new ApiProblem(409, 'This project has no change request awaiting an impact preview.')
+export async function previewChangeImpact(projectId: string, changeRequestId: string): Promise<unknown> {
   const etag = await exactProjectEtag(projectId)
-  return request(`/change-requests/${change.id}/preview-impact`, {
+  return request(`/change-requests/${changeRequestId}/preview-impact`, {
     method: 'POST',
     headers: { 'If-Match': etag },
   })
 }
 
-export async function getLatestChangeContext(projectId: string): Promise<ChangeContext> {
+export async function listProjectChangeRequests(projectId: string): Promise<ChangeRequestRecord[]> {
   const changes = await request<ChangeRequestRecord[]>('/change-requests')
-  const change = changes.filter((candidate) => candidate.projectId === projectId)
-    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0] ?? null
-  if (!change) return { change: null, impact: null }
-  const impact = await request<ImpactPreviewRecord>(`/change-requests/${change.id}/impact`).catch(() => null)
+  return changes.filter((candidate) => candidate.projectId === projectId)
+}
+
+export async function getChangeContext(changeRequest: ChangeRequestRecord): Promise<ChangeContext> {
+  const impact = await request<ImpactPreviewRecord>(`/change-requests/${changeRequest.id}/impact`).catch((error) => {
+    if (error instanceof ApiProblem && error.status === 404) return null
+    throw error
+  })
+  const change = changeRequest
   return { change, impact }
 }
 
@@ -772,10 +915,10 @@ export async function addChangeOperation(projectId: string, changeRequestId: str
   })
 }
 
-export async function decideChangeRequest(projectId: string, changeRequestId: string, decision: ChangeDecision, rationale: string): Promise<unknown> {
+export async function decideChangeRequest(projectId: string, changeRequestId: string, decision: ChangeDecision, rationale: string, operationSetVersion?: number): Promise<unknown> {
   const etag = await exactProjectEtag(projectId)
   return request(`/change-requests/${changeRequestId}/${decision}`, {
-    method: 'POST', headers: { 'If-Match': etag }, body: JSON.stringify({ rationale }),
+    method: 'POST', headers: { 'If-Match': etag }, body: JSON.stringify({ rationale, ...(decision === 'approve' ? { operationSetVersion } : {}) }),
   })
 }
 

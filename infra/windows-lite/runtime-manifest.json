@@ -29,7 +29,7 @@
       "version": "0.2.0",
       "fileName": "ugnay-backend-0.2.0.jar",
       "url": "https://github.com/Gabbu69/UGNAY/releases/download/v0.2.0/ugnay-backend-0.2.0.jar",
-      "sha256": "533a1ded9193abfe94d603ae95123ef7481db0059433f512303d5d123c6f4c67"
+      "sha256": "ef628d1e3a1407168dccb91553a9f8cdce387e06ccbcac3ff6e9b9d1fc1503b1"
     },
     "model": {
       "name": "multilingual-e5-small generic INT8 ONNX model",

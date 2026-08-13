@@ -10,8 +10,10 @@ describe('interface primitives', () => {
   })
 
   it('does not turn an unassessed score into a healthy zero', () => {
-    render(<ScoreRing score={null} label="UNASSESSED" />)
+    const { container } = render(<ScoreRing score={null} label="UNASSESSED" />)
     expect(screen.getByText('—')).toBeInTheDocument()
     expect(screen.getByText('UNASSESSED')).toBeInTheDocument()
+    expect(container.querySelector('.score-ring')).not.toBeInTheDocument()
+    expect(container.querySelector('.score-unassessed')).toBeInTheDocument()
   })
 })

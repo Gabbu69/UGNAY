@@ -16,7 +16,7 @@ export function healthLabel(score: number | null) {
 }
 
 export function overallHealth(dimensions: HealthDimension[]) {
-  const assessed = dimensions.flatMap((dimension) => dimension.score === null ? [] : [dimension.score])
+  const assessed = dimensions.flatMap((dimension) => dimension.state === 'ASSESSED' && dimension.score !== null ? [dimension.score] : [])
   return assessed.length ? Math.min(...assessed) : null
 }
 

@@ -51,11 +51,21 @@ public final class StudyVisibilityPolicy {
         if (scope.curator()) return true;
         String normalizedVisibility = normalize(visibility);
         if (GLOBAL.contains(normalizedVisibility)) return true;
-        if (normalizedVisibility.isEmpty() || RESTRICTED.contains(normalizedVisibility)) return false;
+        if (normalizedVisibility.isEmpty() || protectedVisibility(normalizedVisibility)) return false;
         String normalizedDepartment = normalize(studyDepartment);
         return !normalizedDepartment.isEmpty()
                 && (normalizedDepartment.equals(normalize(scope.departmentCode()))
                 || normalizedDepartment.equals(normalize(scope.departmentName())));
+    }
+
+    /**
+     * Central serialization guard for protected catalogue text. Restricted and
+     * embargoed content must be redacted unless an authenticated curator is
+     * producing the response, even when the row contributed to a derived score.
+     */
+    public boolean mustRedactProtectedText(Scope scope, String visibility) {
+        return protectedVisibility(visibility)
+                && (scope == null || !scope.authenticated() || !scope.curator());
     }
 
     public void requireVisible(Authentication authentication, String visibility, String studyDepartment) {
@@ -85,6 +95,7 @@ public final class StudyVisibilityPolicy {
     private static boolean authenticated(Authentication authentication) {
         return authentication != null && authentication.isAuthenticated()
                 && !(authentication instanceof AnonymousAuthenticationToken)
+                && authentication.getName() != null && !authentication.getName().isBlank()
                 && !"anonymousUser".equals(authentication.getName());
     }
 
@@ -94,6 +105,10 @@ public final class StudyVisibilityPolicy {
 
     private static String normalize(String value) {
         return value == null ? "" : value.strip().toUpperCase(Locale.ROOT);
+    }
+
+    private static boolean protectedVisibility(String visibility) {
+        return RESTRICTED.contains(normalize(visibility));
     }
 
     private static byte[] bytes(UUID id) {
