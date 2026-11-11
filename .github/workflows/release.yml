@@ -33,17 +33,39 @@ jobs:
           mkdir -p backend/target/generated-static
           cp -R frontend/dist/. backend/target/generated-static/
           chmod +x backend/mvnw
-          backend/mvnw -q package
+          (cd backend && ./mvnw -q package)
           sha256sum backend/target/ugnay-backend-0.2.0.jar > SHA256SUMS-app.txt
           expected="$(jq -r '.assets.app.sha256' infra/windows-lite/runtime-manifest.json)"
           actual="$(sha256sum backend/target/ugnay-backend-0.2.0.jar | cut -d ' ' -f 1)"
           test "$actual" = "$expected"
-      - name: Publish application asset
+      - name: Assemble all required Windows Lite assets
+        env:
+          MODEL_URL: ${{ vars.UGNAY_RELEASE_MODEL_URL }}
+          TOKENIZER_URL: ${{ vars.UGNAY_RELEASE_TOKENIZER_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$MODEL_URL" || { echo "Configure UGNAY_RELEASE_MODEL_URL with the pinned INT8 asset source."; exit 1; }
+          test -n "$TOKENIZER_URL" || { echo "Configure UGNAY_RELEASE_TOKENIZER_URL with the pinned tokenizer ZIP source."; exit 1; }
+          mkdir -p dist/release
+          cp backend/target/ugnay-backend-0.2.0.jar dist/release/
+          curl --fail --location --proto '=https' --tlsv1.2 "$MODEL_URL" -o dist/release/multilingual-e5-small-int8.onnx
+          curl --fail --location --proto '=https' --tlsv1.2 "$TOKENIZER_URL" -o dist/release/multilingual-e5-small-tokenizer-v0.2.0.zip
+          cp infra/windows-lite/SHA256SUMS-v0.2.0.txt dist/release/
+          (cd dist/release && sha256sum --check SHA256SUMS-v0.2.0.txt)
+          unzip -q dist/release/multilingual-e5-small-tokenizer-v0.2.0.zip -d dist/tokenizer
+          tokenizer=$(find dist/tokenizer -name tokenizer.json -print -quit)
+          test -n "$tokenizer"
+          model=$(realpath dist/release/multilingual-e5-small-int8.onnx)
+          tokenizer=$(realpath "$tokenizer")
+          (cd backend && ./mvnw -q -Dtest=ConfiguredEmbeddingProviderInt8Test "-Dugnay.test.int8-model=$model" "-Dugnay.test.tokenizer=$tokenizer" test)
+      - name: Publish the complete verified asset set
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           fail_on_unmatched_files: true
-          overwrite_files: true
+          overwrite_files: false
           files: |
-            backend/target/ugnay-backend-0.2.0.jar
-            SHA256SUMS-app.txt
+            dist/release/ugnay-backend-0.2.0.jar
+            dist/release/multilingual-e5-small-int8.onnx
+            dist/release/multilingual-e5-small-tokenizer-v0.2.0.zip
+            dist/release/SHA256SUMS-v0.2.0.txt

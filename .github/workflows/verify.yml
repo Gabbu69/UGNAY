@@ -111,3 +111,6 @@ jobs:
           $manifest = Get-Content -Raw infra/windows-lite/runtime-manifest.json | ConvertFrom-Json
           if ($manifest.assets.app.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Release JAR checksum is not pinned.' }
           if (-not (Test-Path 'Start UGNAY.cmd') -or -not (Test-Path 'AGENTS.md')) { throw 'Windows or AI handoff entrypoint is missing.' }
+      - name: Verify installer release preflight
+        shell: powershell
+        run: .\scripts\windows\test-release-assets.ps1

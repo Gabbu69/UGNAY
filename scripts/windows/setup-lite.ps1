@@ -78,12 +78,14 @@ function Convert-Secure([Security.SecureString]$Secure) {
 }
 
 Assert-HostReady
-Initialize-UgnayFolders
-Protect-UgnayFolders
 $repositoryRoot = Get-RepositoryRoot
 $manifestPath = Join-Path $repositoryRoot 'infra\windows-lite\runtime-manifest.json'
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'The tracked Windows runtime manifest is missing.' }
 $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'release-assets.ps1')
+Assert-UgnayReleaseAssets -Manifest $manifest
+Initialize-UgnayFolders
+Protect-UgnayFolders
 $downloadRoot = Join-Path $script:RuntimeRoot 'downloads'
 [void](New-Item -ItemType Directory -Force -Path $downloadRoot)
 Install-VcRuntime $manifest $downloadRoot

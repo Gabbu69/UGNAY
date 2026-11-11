@@ -195,3 +195,20 @@ More detail: [architecture](docs/architecture.md), [research framework](docs/res
 ## Handoff to another AI
 
 After cloning, another coding agent should read [AGENTS.md](AGENTS.md) before editing. It records the product boundary, source-of-truth rules, project authorization, ETag requirements, UI constraints, verification commands, release process, and rules against invented live data.
+
+## Release repair handoff
+
+The Windows installer now probes the three required application/model/tokenizer
+assets before creating runtime folders or requesting runtime installation. It
+fails clearly when the published asset set is incomplete or unreachable.
+
+The tag workflow builds from the backend working directory, assembles all four
+release attachments, verifies the tracked checksums, and runs the INT8 inference
+test before publication. Configure repository variables `UGNAY_RELEASE_MODEL_URL`
+and `UGNAY_RELEASE_TOKENIZER_URL` with accessible HTTPS sources for the already
+pinned binary artifacts. Downloads must match the existing manifest; no hash is
+invented and the workflow does not substitute the FP32 model for INT8.
+
+This source change does not publish a release or establish clean Windows-account,
+offline-restart, or physical 4 GB acceptance. Those gates still need actual assets
+and execution evidence.
